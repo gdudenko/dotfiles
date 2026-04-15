@@ -1,6 +1,3 @@
-I'll fix the README to make it beautiful and properly formatted with correct bash code blocks.
-
-```markdown
 # 🔧 Dotfiles — Neovim + Tmux + Zsh конфигурация
 
 Персональная среда разработки для Python/Django с профилированием, отладкой и интеграцией tmux.
@@ -202,4 +199,3 @@ git commit -m "docs: обновить README с командами tmux"
 ## 📄 Лицензия
 
 MIT — используйте как угодно.
-```
