@@ -1,0 +1,48 @@
+# === Neovim ===
+.config/nvim/lazy/
+.config/nvim/.git/
+.config/nvim/**/*.pyc
+.config/nvim/**/__pycache__/
+.config/nvim/.venv/
+.config/nvim/venv/
+.config/nvim/data/
+.config/nvim/state/
+.config/nvim/cache/
+
+# === Tmux ===
+.config/tmux/*.log
+.config/tmux/resurrect/
+
+# === Zsh ===
+.zsh_history
+.zsh_sessions/
+.cache/p10k-instant-prompt-*.zsh
+
+# === System ===
+.DS_Store
+*.swp
+*.swo
+*~
+*.log
+.env
+*.local
+
+# === IDE ===
+.idea/
+.vscode/
+*.iml
+
+# === Python ===
+*.pyc
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# === Secrets (никогда не коммитьте!) ===
+*.pem
+*.key
+*.secret
+**/credentials*
+**/secrets*
