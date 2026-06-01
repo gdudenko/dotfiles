@@ -617,17 +617,45 @@ require("lazy").setup({
             })
 
             local cmp = require("cmp")
+            local cmp = require("cmp")
             cmp.setup({
                 snippet = {
                     expand = function(args)
                         require('luasnip').lsp_expand(args.body)
                     end,
                 },
+                experimental = {
+                    ghost_text = true, -- ← серая подсказка
+                },
                 mapping = cmp.mapping.preset.insert({
                     ['<C-Space>'] = cmp.mapping.complete(),
                     ['<CR>'] = cmp.mapping.confirm({ select = true }),
                     ['<Tab>'] = cmp.mapping.select_next_item(),
                     ['<S-Tab>'] = cmp.mapping.select_prev_item(),
+
+                    -- === ВОТ НОВЫЕ КЛАВИШИ (как в Supermaven) ===
+                    ['<C-g>'] = cmp.mapping.confirm({ select = true }),
+                    ['<C-j>'] = cmp.mapping(function(fallback)
+                        if cmp.visible() then
+                            -- Вставляем только первое слово из выделенного пункта
+                            local entry = cmp.get_selected_entry()
+                            if entry then
+                                local word = entry.completion_item.label:match("^(%S+)")
+                                if word then
+                                    vim.api.nvim_put({ word }, 'c', false, true)
+                                    cmp.abort()
+                                else
+                                    cmp.confirm({ select = true })
+                                end
+                            else
+                                cmp.confirm({ select = true })
+                            end
+                        else
+                            fallback()
+                        end
+                    end, { "i", "s" }),
+                    ['<C-]>'] = cmp.mapping.abort(),
+                    -- ============================================
                 }),
                 sources = cmp.config.sources({
                     { name = 'nvim_lsp' },
@@ -666,24 +694,47 @@ require("lazy").setup({
                 cmd = { 'pyright-langserver', '--stdio' },
                 filetypes = { 'python' },
                 root_markers = { 'pyproject.toml', 'setup.py', 'requirements.txt', 'manage.py', '.git' },
-                settings = function()
-                    local venv_name, venv_path = find_venv()
-                    local settings = {
-                        python = {
-                            analysis = {
-                                typeCheckingMode = "basic",
-                                useLibraryCodeForTypes = true,
-                                autoSearchPaths = true,
-                                diagnosticMode = "workspace",
+                settings = {
+                    python = {
+                        analysis = {
+                            typeCheckingMode = "basic",
+                            useLibraryCodeForTypes = true,
+                            autoSearchPaths = true,
+                            diagnosticMode = "workspace",
+                            stubPath = vim.fn.expand("~/.local/lib/pyright-stubs/stubs"),
+                            reportMissingTypeStubs = "warning",
+                            reportUnknownMemberType = "none",
+                            diagnosticSeverityOverrides = {
+                                reportMissingModuleSource = 'none',
                             }
                         }
                     }
-                    -- Если нашли venv, добавляем его в настройки
-                    if venv_name then
-                        settings.python.analysis.venv = venv_name
-                        settings.python.analysis.venvPath = venv_path
+                },
+                on_new_config = function(new_config, new_root_dir)
+                    -- Функция поиска venv (оставлена без изменений)
+                    local function find_venv()
+                        local cwd = new_root_dir or vim.fn.getcwd()
+                        local venv_names = { "venv", ".venv", "env" }
+                        for _, name in ipairs(venv_names) do
+                            local venv_path = vim.fs.joinpath(cwd, name)
+                            if vim.fn.isdirectory(venv_path) == 1 then
+                                return name, cwd
+                            end
+                        end
+                        return nil, cwd
                     end
-                    return settings
+
+                    local venv_name, venv_path = find_venv()
+                    if venv_name then
+                        new_config.settings = vim.tbl_deep_extend("force", new_config.settings or {}, {
+                            python = {
+                                analysis = {
+                                    venv = venv_name,
+                                    venvPath = venv_path,
+                                }
+                            }
+                        })
+                    end
                 end,
                 capabilities = capabilities,
                 on_attach = on_attach,
@@ -799,7 +850,7 @@ require("lazy").setup({
         end,
     },
 
-    -- SUPERMAVEN (AI)
+    -- ЛОКАЛЬНЫЙ AI-АВТОДОПОЛНЕНИЕ (LLM.NVIM + OLLAMA)
     {
         "supermaven-inc/supermaven-nvim",
         config = function()
@@ -1161,6 +1212,45 @@ require("lazy").setup({
             vim.g.db_ui_save_location = vim.fn.stdpath("data") .. "/dadbod_ui"
         end,
     },
+
+    -- ЛОКАЛЬНЫЙ AI (GEN.NVIM + LLAMA-SERVER)
+    {
+        "David-Kunz/gen.nvim",
+        config = function()
+            require('gen').setup({
+                model = "Jackrong/Qwopus3.5-9B-Coder-GGUF:Q5_K_M", -- Имя модели, которую отдает llama-server
+                host = "http://127.0.0.1:8080",                    -- Адрес вашего llama-server
+                engine = "openai",                                 -- Используем OpenAI-совместимый API формат
+                show_prompt = true,
+                show_model = true,
+                no_auto_close = false,
+                display_mode = "float",     -- Открывать ответ в плавающем окне
+                no_serve_on_startup = true, -- Не пытаться запустить ollama сервер
+            })
+
+            -- Кастомные промпты (адаптировано под gen.nvim)
+            -- $text - выделенный текст, $filetype - тип файла, $input - ваш ввод
+            require('gen').prompts = {
+                ["Спросить о коде"] = {
+                    prompt =
+                    "Вопрос о следующем коде:\n```$filetype\n$text\n```\n\nВопрос: $input\n\nОтветь на русском языке. Если нужно показать код, оформляй его в Markdown.",
+                },
+                ["Объяснить код"] = {
+                    prompt =
+                    "Объясни следующий код:\n```$filetype\n$text\n```\n\nДай подробное объяснение на русском языке.",
+                },
+                ["Сгенерировать код"] = {
+                    prompt =
+                    "Сгенерируй код на языке $filetype по описанию:\n$input\n\nПиши чистый, эффективный код. Ответь на русском языке, код оформи в блок.",
+                },
+            }
+
+            -- Маппинги
+            local map = vim.keymap.set
+            map({ 'n', 'v' }, '<leader>oo', ':Gen Спросить о коде<CR>', { desc = "Спросить о коде (AI)", silent = true })
+            map({ 'n', 'v' }, '<leader>oc', ':Gen<CR>', { desc = "Выбрать AI промпт", silent = true })
+        end,
+    },
 })
 
 -- 8. ФУНКЦИЯ ДЛЯ БЫСТРОГО ПРОФИЛИРОВАНИЯ PYTHON
@@ -1438,6 +1528,10 @@ vim.defer_fn(function()
     print("   F12         - Шаг наружу")
     print("   <ПРОБЕЛ>du  - Показать UI отладки")
     print("")
+    print("🤖 AI-ПОМОЩНИК (ЛОКАЛЬНЫЙ):")
+    print("   <ПРОБЕЛ>ll  - Принудительный вызов автодополнения")
+    print("   (работает автоматически через меню nvim-cmp)")
+    print("")
     print("🗄️  БАЗЫ ДАННЫХ:")
     print("   :DBUI       - Открыть интерфейс Dadbod")
     print("=" .. string.rep("=", 50))
@@ -1480,4 +1574,4 @@ vim.defer_fn(function()
     end)
 end, 100)
 
-print("✅ Конфигурация Neovim с профилированием Python и Django загружена!")
+print("✅ Конфигурация Neovim с профилированием Python, Django и локальным AI загружена!")

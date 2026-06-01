@@ -1,6 +1,11 @@
+# Запускаем fastfetch сразу, до инициализации Powerlevel10k
+fastfetch
+
 # Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
 # Initialization code that may require console input (password prompts, [y/n]
 # confirmations, etc.) must go above this block; everything else may go below.
+typeset -g POWERLEVEL9K_INSTANT_PROMPT=quiet
+
 if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
@@ -21,6 +26,7 @@ plugins=(
     zsh-syntax-highlighting
     zsh-autosuggestions
     foot
+    zoxide
     )
 
 source $ZSH/oh-my-zsh.sh
@@ -35,9 +41,6 @@ fi
 # =============================================
 # TMUX + NEOVIM ПРОЕКТНЫЕ ФУНКЦИИ (ИСПРАВЛЕННЫЕ)
 # =============================================
-
-# Автоматическая отправка текущей директории в Neovim через OSC 7
-precmd() { printf "\033]7;file://%s%s\033\\" "${HOSTNAME}" "$(pwd)" }
 
 # Функция для активации venv
 activate_project_venv() {
@@ -66,7 +69,7 @@ nvim-project() {
     # Если передан аргумент - переходим в папку
     if [ -n "$1" ]; then
         if [ -d "$1" ]; then
-            cd "$1" || return 1
+            builtin cd "$1" || return 1
         else
             echo "❌ Ошибка: Директория '$1' не существует"
             return 1
@@ -136,6 +139,9 @@ tmux-kill-all() {
     echo "✅ Все сессии закрыты"
 }
 
+export ZOXIDE_CMD_OVERRIDE="cd"
+
+
 # =============================================
 # АЛИАСЫ
 # =============================================
@@ -170,6 +176,19 @@ alias check-deps="echo '🔍 Проверка зависимостей...' && \
                   command -v nvim >/dev/null && echo '✅ nvim: установлен' || echo '❌ nvim: не установлен' && \
                   command -v git >/dev/null && echo '✅ git: установлен' || echo '❌ git: не установлен'"
 
+alias ls='lsd'
+alias cat='bat'
+# Умная обёртка для cd + zoxide
+cd() {
+    # Если нет аргументов или это спец-случаи — используем builtin cd
+    if [[ $# -eq 0 || "$1" == '-' || "$1" == '/' || "$1" == '~' || "$1" == '..' || "$1" == '../'* || "$1" == '.' || "$1" == '.'* ]]; then
+        builtin cd "$@"
+    else
+        # Для всего остального — zoxide
+        __zoxide_z "$@"
+    fi
+}
+
 # Справка
 alias np-help="echo '📚 КОМАНДЫ NEOVIM+TMUX:' && \
                echo '  np [папка]    - Создать/присоединиться к проекту' && \
@@ -179,13 +198,14 @@ alias np-help="echo '📚 КОМАНДЫ NEOVIM+TMUX:' && \
                echo '  Ctrl+A -      - Разделить панель горизонтально' && \
                echo '  Ctrl+A h/j/k/l - Навигация между панелями' && \
                echo '  tls           - Список сессий tmux'"
+# =============================================
+# HOOK для Powerlevel10k: вывод после инициализации
+# =============================================
 
 # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
 [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
+
 export TERMINAL=footclient
 export CC=clang
 export CXX=clang++
-export CLIENT_PATH="/home/gennady/Hellgarve_Legion_Full_Client"
-export CLIENT_PATH="/home/gennady/PortProton/prefixes/DOTNET/drive_c/Games/CircleLeg"
-export CLIENT_PATH="/home/gennady/Hellgarve_Legion_Full_Client"
-export CLIENT_PATH="/home/gennady/PortProton/prefixes/DOTNET/drive_c/Games/WOW"
+export PATH="$HOME/go/bin:$PATH"
