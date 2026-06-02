@@ -91,8 +91,9 @@ create_symlink "$SCRIPT_DIR/.config/tmux/create_panes.sh" "$HOME_DIR/.config/tmu
 chmod +x "$HOME_DIR/.config/tmux/create_panes.sh" 2>/dev/null || true
 
 # Neovim
-create_symlink "$SCRIPT_DIR/.config/nvim/init.lua" "$HOME_DIR/.config/nvim/init.lua"
-create_symlink "$SCRIPT_DIR/.config/nvim/lazy-lock.json" "$HOME_DIR/.config/nvim/lazy-lock.json"
+ln -sf ~/.dotfiles/.config/nvim/init.lua ~/.config/nvim/init.lua
+ln -sf ~/.dotfiles/.config/nvim/lua ~/.config/nvim/lua
+ln -sf ~/.dotfiles/.config/nvim/lazy-lock.json ~/.config/nvim/lazy-lock.json
 
 # Zsh
 create_symlink "$SCRIPT_DIR/.zshrc" "$HOME_DIR/.zshrc"

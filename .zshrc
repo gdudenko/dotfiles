@@ -42,28 +42,6 @@ fi
 # TMUX + NEOVIM ПРОЕКТНЫЕ ФУНКЦИИ (ИСПРАВЛЕННЫЕ)
 # =============================================
 
-# Функция для активации venv
-activate_project_venv() {
-    local project_path="$1"
-    local venv_candidates=(
-        "$project_path/venv"
-        "$project_path/.venv"
-        "$project_path/env"
-    )
-
-    for venv_path in "${venv_candidates[@]}"; do
-        local activate_script="$venv_path/bin/activate"
-        if [ -f "$activate_script" ]; then
-            source "$activate_script"
-            echo "✅ Активирован venv: $(basename "$venv_path")"
-            return 0
-        fi
-    done
-
-    echo "ℹ️  Виртуальное окружение не найдено"
-    return 1
-}
-
 # Функция 1: Автоматический запуск tmux с проектом (ИСПРАВЛЕННАЯ)
 nvim-project() {
     # Если передан аргумент - переходим в папку
@@ -80,27 +58,25 @@ nvim-project() {
     local session_name=$(basename "$(pwd)")
     local project_path="$(pwd)"
 
+    # ФИКС: Tmux не позволяет начинать имя сессии с точки, он заменяет её на _
+    # Делаем это заранее, чтобы все команды обращались к правильному имени
+    session_name="${session_name/#./_}"
+
     echo "🔄 Настраиваю проект: $session_name"
     echo "📁 Путь: $project_path"
 
     # Проверяем, есть ли уже сессия
-    if ! tmux has-session -t "$session_name" 2>/dev/null; then
+    if ! tmux has-session -t "=$session_name" 2>/dev/null; then
         echo "🆕 Создаю новую tmux сессию: $session_name"
 
-        # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ 1: Создаём сессию БЕЗ запуска nvim внутри
+        # Создаём сессию БЕЗ запуска nvim внутри
         tmux new-session -d -s "$session_name" -c "$project_path" -n "main"
 
-        # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ 2: Даём сессии время на полную инициализацию
+        # Даём сессии время на полную инициализацию
         sleep 0.5
 
-        # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ 3: Создаём панели через скрипт, передав ему ID сессии
-        # Скрипт теперь сам запустит nvim после создания всех панелей
+        # Создаём панели через скрипт, передав ему правильное имя сессии
         ~/.config/tmux/create_panes.sh "$session_name" "main" "1"
-
-        # Активируем venv для Neovim если есть (теперь через скрипт)
-        if activate_project_venv "$project_path"; then
-            echo "✅ Виртуальное окружение будет активировано в Neovim"
-        fi
 
     else
         echo "ℹ️  Сессия '$session_name' уже существует"
@@ -109,7 +85,7 @@ nvim-project() {
     # Подключаемся к сессии
     echo "📌 Присоединяюсь к сессии: $session_name"
     echo "💡 Используйте Ctrl+A P для пересоздания панелей если нужно"
-    tmux attach-session -t "$session_name"
+    tmux attach-session -t "=$session_name"
 }
 
 # Функция 2: Быстрое создание панелей в существующей сессии
