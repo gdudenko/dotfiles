@@ -114,6 +114,20 @@ cd ~/.dotfiles && git checkout main
 | `<Space>pp` | Профилирование Python (cProfile) |
 | `<Space>dr` | Django runserver |
 | `<Space>dm` | Django migrate |
+| `<Space>oa` | AI: открыть чат |
+| `<Space>oo` | AI: спросить о коде |
+| `<Space>oe` | AI: объяснить код |
+| `<Space>og` | AI: сгенерировать по описанию (inline) |
+| `<Space>oc` | AI: меню действий |
+| `<Space>gg` / `<Space>gc` | Neogit: статус / коммит |
+| `<Space>gd` | Diffview: текущий файл |
+| `<Space>hs` / `<Space>hp` | Git: stage блока / превью |
+| `<Space>xx` | Trouble: список ошибок |
+| `<Space>f` / `<Space>g` | Раскрыть группы which-key |
+
+В statusline постоянно висит шпаргалка по самым частым командам
+(`ff`, `fg`, `g`, `nt`, `dr`, `np`, `xx`). На окнах уже 110 колонок она
+скрывается, чтобы не вытеснять имя файла.
 
 ### Tmux (prefix = Ctrl+A)
 
@@ -132,6 +146,66 @@ cd ~/.dotfiles && git checkout main
 | `npp` | Добавить панели в текущую сессию |
 | `tls` / `ta` / `tk` | Управление tmux-сессиями |
 | `nreload` / `treload` | Перезагрузить конфиги |
+
+## 🤖 AI-ассистент (codecompanion.nvim)
+
+Чат с LLM прямо в редакторе. Клавиши — в таблице выше (`<Space>oa` и далее),
+плюс slash-команды `/ask` и `/explain` внутри чата.
+
+### Настройка ключа
+
+Ключ берётся из `~/.hermes/.env`, переменная `OPENCODE_ZEN_API_KEY`.
+В самом конфиге секрета нет — он читается в момент запроса:
+
+```bash
+echo 'OPENCODE_ZEN_API_KEY=ваш_ключ' >> ~/.hermes/.env
+```
+
+При старте nvim покажет уведомление: найден ключ или нет.
+
+### Переключение на локальную модель
+
+Всё настраивается одной функцией `cc_adapter()` в начале `plugins.lua`.
+Меняются две строки:
+
+```lua
+url = "http://127.0.0.1:8080/v1/chat/completions"
+schema = { model = { default = "<имя модели>" } }
+```
+
+Запуск сервиса:
+
+```bash
+sudo systemctl enable --now llama-server
+curl -s http://127.0.0.1:8080/v1/models   # убедиться, что модель поднялась
+```
+
+Юнит лежит в `/etc/systemd/system/llama-server.service`, модель тянется
+через флаг `-hf` и качивается с HuggingFace при первом старте (это надолго,
+на 9B около нескольких ГБ).
+
+Для ollama URL будет `http://127.0.0.1:11434/v1/chat/completions`.
+
+Два обязательных условия, иначе не заработает:
+
+- **URL полный, до `/chat/completions`.** Без пути запрос попадает в корень
+  API и приходит HTML вместо JSON.
+- **Модель через `schema.model.default`.** Поле `model` на верхнем уровне
+  не попадает в schema адаптера, остаётся дефолт `gpt-4.1`.
+
+Для локального сервера api_key любой — llama.cpp его не проверяет.
+
+### Замечания по реализации
+
+Три вещи, которые в codecompanion неочевидны и на которые ушло время:
+
+- Дефолтный адаптер — `copilot`, и он шлёт текст запроса на
+  `api.githubcopilot.com`. В конфиге отключено через `background = { enabled = false }`.
+- Cloudflare перед opencode.ai отвечает 403 (error code 1010) на запросы
+  вообще без `User-Agent`. В адаптере прописан явный заголовок.
+- Свой endpoint задаётся функцией в `strategies.chat.adapter`, а не полем
+  `strategies.chat.url`: `init_adapter` вызывает `resolve()` без opts, и
+  поля url/model там молча игнорируются.
 
 ## 🐛 Устранение проблем
 
@@ -159,13 +233,44 @@ git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
 # В tmux: Ctrl+A + I (установка плагинов)
 ```
 
+### AI не отвечает
+
+Смотри лог плагина — в нём видно реальный ответ сервера:
+
+```bash
+tail -30 ~/.local/state/nvim/codecompanion.log
+```
+
+Что означают ошибки:
+
+| Ошибка | Причина |
+|--------|---------|
+| `unsupported_country_region_territory` | Запрос ушёл не туда. Смотри `Domain=` в set-cookie: `api.openai.com` — url не применился; другого значения быть не должно |
+| `forbidden: access denied` с `x-github-request-id` | Используется дефолтный copilot-адаптер вместо openai |
+| `error code: 1010` от Cloudflare | Нет заголовка `User-Agent` в адаптере |
+| HTML вместо текста | url без пути `/chat/completions`, попали в корень API |
+| `Invalid API key` | Ключ не прочитан. Проверь, что `OPENCODE_ZEN_API_KEY` есть в `~/.hermes/.env` |
+
+Проверить ключ и endpoint вручную:
+
+```bash
+grep -c OPENCODE_ZEN_API_KEY ~/.hermes/.env
+curl -s -o /dev/null -w '%{http_code}\n' \
+  https://opencode.ai/zen/v1/chat/completions \
+  -H "Authorization: Bearer *** \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"space-bunny-free","messages":[{"role":"user","content":"hi"}],"max_tokens":5}'
+```
+
+Должно быть 200. Если 403 или 401 — дело в ключе, а не в nvim.
+
 ## 📁 Структура репозитория
 
 ```
 ~/.dotfiles/
 ├── .config/
 │   ├── tmux/          # tmux.conf + create_panes.sh
-│   └── nvim/          # init.lua + lazy-lock.json
+│   └── nvim/          # init.lua, lazy-lock.json, lua/config/*.lua
 ├── .zshrc             # Shell конфигурация
 ├── install.sh         # Скрипт установки (symlinks)
 ├── uninstall.sh       # Скрипт удаления (опционально)

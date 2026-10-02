@@ -185,3 +185,4 @@ export TERMINAL=footclient
 export CC=clang
 export CXX=clang++
 export PATH="$HOME/go/bin:$PATH"
+export ALSA_PCM_NAME=pipewire   # Hermes/PortAudio: ресемплинг через pipewire

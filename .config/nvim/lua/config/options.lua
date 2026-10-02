@@ -35,7 +35,6 @@ vim.diagnostic.config({
         prefix = "",
         focusable = false,
     },
-    signs = true,
     underline = true,
     update_in_insert = false,
     severity_sort = true,

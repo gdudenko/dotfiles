@@ -1,6 +1,4 @@
 -- =============================================
--- УСТАНОВКА И НАСТРОЙКА ПЛАГИНОВ (LAZY.NVIM)
--- =============================================
 local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
 if not vim.loop.fs_stat(lazypath) then
     vim.fn.system({
@@ -9,6 +7,65 @@ if not vim.loop.fs_stat(lazypath) then
     })
 end
 vim.opt.rtp:prepend(lazypath)
+
+-- Загрузка ключа opencode-zen из ~/.hermes/.env.
+--
+-- Ключ не в окружении nvim, а в файле, поэтому читаем файл напрямую.
+-- Секрет НЕ попадает в конфиг и в подписи на диске — только в память
+-- процесса на время запроса.
+_G.CCLoadKey = function()
+    local path = vim.fn.expand("~/.hermes/.env")
+    if vim.fn.filereadable(path) == 0 then return "" end
+    for _, line in ipairs(vim.fn.readfile(path)) do
+        local k, v = line:match("^%s*(%u[%u%d_]*)%s*=%s*(.-)%s*$")
+        if k == "OPENCODE_ZEN_API_KEY" then
+            -- Снимаем возможные кавычки, .env их допускает
+            v = v:gsub('^["\']', ""):gsub('["\']$', "")
+            return v
+        end
+    end
+    return ""
+end
+
+-- Сборка адаптера codecompanion под конкретный OpenAI-совместимый endpoint.
+-- Одна функция на chat и inline: иначе они разъезжаются (было именно так —
+-- в inline остался url без /chat/completions и model не в schema, то есть
+-- inline не работал бы).
+--
+-- url нужен ПОЛНЫМ, до /chat/completions: при url без пути запрос попадает
+-- в корень API и приходит HTML вместо JSON.
+-- Модель — через schema.model.default, поле model верхнего уровня не
+-- попадает в schema (оставался дефолт gpt-4.1).
+--
+-- ПЕРЕКЛЮЧЕНИЕ НА ЛОКАЛЬНУЮ МОДЕЛЬ — меняются только эти две строки:
+--
+--   url = "http://127.0.0.1:8080/v1/chat/completions"
+--   schema = { model = { default = "<имя модели>" } }
+--
+-- Требования к сервису: sudo systemctl enable --now llama-server
+-- (unit тянет модель через -hf, качает с HuggingFace при первом старте).
+-- api_key для локального сервера можно оставить как есть: llama.cpp его
+-- не проверяет, а CCLoadKey вернёт "dummy", если .env нет.
+-- Локальный ollama: url = "http://127.0.0.1:11434/v1/chat/completions"
+local function cc_adapter()
+    local AH = require("codecompanion.adapters.http")
+    local base = require("codecompanion.adapters.http.openai")
+    return AH.extend(base, {
+        url = "https://opencode.ai/zen/v1/chat/completions",
+        schema = { model = { default = "space-bunny-free" } },
+        env = {
+            api_key = function() return _G.CCLoadKey() end,
+        },
+        -- Cloudflare отвечает 403 (error code 1010) на запросы вообще без
+        -- User-Agent. Проверено сравнением: пустой UA -> 403, непустой -> 200.
+        headers = {
+            ["Content-Type"] = "application/json",
+            Authorization = "Bearer ${api_key}",
+            ["User-Agent"] = "curl/8.22.0",
+        },
+    })
+end
+
 
 require("lazy").setup({
     -- ЦВЕТОВАЯ СХЕМА
@@ -22,6 +79,7 @@ require("lazy").setup({
                 flavour = "mocha",
                 transparent_background = false,
                 term_colors = true,
+
                 integrations = {
                     treesitter = true,
                     nvimtree = true,
@@ -69,6 +127,7 @@ require("lazy").setup({
             vim.g.loaded_netrw = 1
             vim.g.loaded_netrwPlugin = 1
             local api = require("nvim-tree.api")
+
             local function send_cd_to_tmux(path)
                 if not path then return end
                 local safe_path = path:gsub("'", "'\\''")
@@ -82,7 +141,7 @@ require("lazy").setup({
                 renderer = {
                     icons = {
                         show = { file = true, folder = true, folder_arrow = true, git = true },
-                        glyphs = { default = "", symlink = "", folder = { arrow_closed = "", arrow_open = "", default = "", open = "", empty = "", empty_open = "", symlink = "", symlink_open = "" } },
+                        glyphs = { default = "󰈔", symlink = "󰈙", folder = { arrow_closed = "", arrow_open = "", default = "", open = "", empty = "", empty_open = "", symlink = "" } },
                     },
                     indent_markers = { enable = true, inline_arrows = true, icons = { corner = "└", edge = "│", item = "│", none = " " } },
                 },
@@ -95,10 +154,25 @@ require("lazy").setup({
                 },
                 on_attach = function(bufnr)
                     local function opts(desc) return { desc = "nvim-tree: " .. desc, buffer = bufnr, noremap = true, silent = true, nowait = true } end
+
+                    -- НАВИГАЦИЯ И ОТКРЫТИЕ
                     vim.keymap.set("n", "<CR>", api.node.open.edit, opts("Open"))
                     vim.keymap.set("n", "o", api.node.open.edit, opts("Open"))
+                    vim.keymap.set("n", "<2-LeftMouse>", api.node.open.edit, opts("Open"))
                     vim.keymap.set("n", "h", api.node.navigate.parent_close, opts("Close Directory"))
                     vim.keymap.set("n", "l", api.node.open.edit, opts("Open"))
+
+                    -- ФАЙЛОВЫЕ ОПЕРАЦИИ
+                    vim.keymap.set("n", "a", api.fs.create, opts("Create File/Dir"))
+                    vim.keymap.set("n", "d", api.fs.remove, opts("Delete"))
+                    vim.keymap.set("n", "r", api.fs.rename, opts("Rename"))
+                    vim.keymap.set("n", "e", api.fs.rename_basename, opts("Rename Basename"))
+                    vim.keymap.set("n", "c", api.fs.copy.node, opts("Copy"))
+                    vim.keymap.set("n", "p", api.fs.paste, opts("Paste"))
+                    vim.keymap.set("n", "x", api.fs.cut, opts("Cut"))
+                    vim.keymap.set("n", "y", api.fs.copy.filename, opts("Copy Name"))
+
+                    -- СИНХРОНИЗАЦИЯ С TMUX
                     vim.keymap.set("n", "C", function()
                         local node = api.tree.get_node_under_cursor()
                         if node and node.type == "directory" then
@@ -112,22 +186,108 @@ require("lazy").setup({
         end,
     },
 
+    -- BREADCRUMBS (ХЛЕБНЫЕ КРОШКИ КАК В VSCODE)
+    {
+        "SmiteshP/nvim-navic",
+        dependencies = { "neovim/nvim-lspconfig" },
+        config = function()
+            require("nvim-navic").setup({
+                icons = {
+                    File          = "󰈙 ",
+                    Module        = "󰆧 ",
+                    Namespace     = "󰌗 ",
+                    Package       = "󰏓 ",
+                    Class         = "󰌗 ",
+                    Method        = "󰆧 ",
+                    Property      = "󰜢 ",
+                    Field         = "󰜢 ",
+                    Constructor   = " ",
+                    Enum          = "󰕘 ",
+                    Interface     = "󰜢 ",
+                    Function      = "󰊕 ",
+                    Variable      = "󰆧 ",
+                    Constant      = "󰏿 ",
+                    String        = "󰀬 ",
+                    Number        = "󰎠 ",
+                    Boolean       = " ",
+                    Array         = "󰅪 ",
+                    Object        = "󰅩 ",
+                    Key           = "󰌋 ",
+                    Null          = "󰟢 ",
+                    Event         = " ",
+                    Operator      = "󰆕 ",
+                    TypeParameter = "󰊄 ",
+                },
+                highlight = true,
+                separator = " > ",
+                depth_limit = 0,
+                lazy_update_context = false,
+            })
+
+            vim.api.nvim_create_autocmd("LspAttach", {
+                callback = function(args)
+                    local client = vim.lsp.get_client_by_id(args.data.client_id)
+                    if client and client.server_capabilities.documentSymbolProvider then
+                        require("nvim-navic").attach(client, args.buf)
+                    end
+                end,
+            })
+        end,
+    },
+
     -- СТАТУСНАЯ СТРОКА
     {
         "nvim-lualine/lualine.nvim",
-        dependencies = { "nvim-tree/nvim-web-devicons", "catppuccin/nvim" }, -- Добавлен catppuccin
+        dependencies = {
+            "nvim-tree/nvim-web-devicons",
+            "catppuccin/nvim",
+            "SmiteshP/nvim-navic",
+        },
         config = function()
+            -- Постоянная шпаргалка по самым частым командам лидера.
+            -- Живёт в lualine_x, поэтому не занимает отдельную строку экрана.
+            -- На узких окнах (<110 колонок) прячется, иначе lualine вытеснит
+            -- имя файла, а неверные подсказки скрываются с края по одной.
+            local hints = function()
+                return " ff файл  fg поиск  g git  nt дерево  dr запуск  np venv  xx ошибки  "
+            end
+            local hints_visible = function()
+                return vim.o.columns >= 110
+            end
             require("lualine").setup({
                 options = {
-                    theme = "auto" -- Изменено на auto, чтобы автоматически подхватывать catppuccin
+                    theme = "auto",
+                    component_separators = { left = '│', right = '│' },
+                    section_separators = { left = '', right = '' },
                 },
                 sections = {
+                    lualine_a = { 'mode' },
+                    lualine_b = { 'branch', 'diff' },
                     lualine_c = {
-                        { 'diagnostics', sources = { 'nvim_diagnostic' }, symbols = { error = ' ', warn = ' ', info = ' ', hint = ' ' } },
-                        { 'filetype', icon_only = true, separator = '', padding = { left = 1, right = 0 } },
+                        { 'diagnostics', sources = { 'nvim_diagnostic' }, symbols = { error = ' ', warn = ' ', info = ' ', hint = ' ' } },
+                        { 'filetype',    icon_only = true,                separator = '',                                               padding = { left = 1, right = 0 } },
+                        { 'filename',    path = 1 },
+                        {
+                            function() return require("nvim-navic").get_location() end,
+                            cond = function()
+                                return package.loaded["nvim-navic"] and
+                                    require("nvim-navic").is_available()
+                            end,
+                            color = { fg = "#cba6f7", gui = "bold" },
+                        },
                         { function() return vim.bo.filetype == 'htmldjango' and '󰌠 Django' or '' end, color = { fg = '#f38ba8', gui = 'bold' } }
-                    }
-                }
+                    },
+                    lualine_x = {
+                        { hints, color = { fg = "#7f849c", gui = "italic" }, separator = "", padding = { left = 0, right = 0 }, cond = hints_visible },
+                        'encoding', 'fileformat'
+                    },
+                    lualine_y = { 'progress' },
+                    lualine_z = { 'location' }
+                },
+                inactive_sections = {
+                    lualine_c = { 'filename' },
+                    lualine_x = { 'location' },
+                },
             })
         end,
     },
@@ -182,40 +342,108 @@ require("lazy").setup({
             map('n', '<leader>dt',
                 function() builtin.current_buffer_fuzzy_find({ prompt_title = "Поиск Django тегов", default_text = "{%" }) end,
                 { desc = "Поиск Django тегов" })
+            -- НОВОЕ: Поиск символов (функции/классы)
+            map('n', '<leader>cs', builtin.lsp_document_symbols, { desc = "Символы файла (функции/классы)" })
+            map('n', '<leader>cS', builtin.lsp_workspace_symbols, { desc = "Символы проекта (все файлы)" })
         end
+    },
+
+    -- СИМВОЛЫ (OUTLINE КАК В VSCODE)
+    {
+        "stevearc/aerial.nvim",
+        dependencies = {
+            "nvim-treesitter/nvim-treesitter",
+            "nvim-tree/nvim-web-devicons",
+        },
+        event = { "BufReadPost", "BufNewFile" },
+        config = function()
+            require("aerial").setup({
+                layout = {
+                    default_direction = "right",
+                    placement = "edge",
+                },
+                attach_mode = "global",
+                backends = { "lsp", "treesitter", "markdown", "man" },
+                filter_kind = {
+                    "Class", "Constructor", "Enum", "Function", "Interface",
+                    "Module", "Method", "Struct", "Property",
+                },
+                show_guides = true,
+                icons = {
+                    File = "󰈙",
+                    Module = "󰆧",
+                    Namespace = "󰌗",
+                    Package = "󰏓",
+                    Class = "󰌗",
+                    Method = "󰆧",
+                    Property = "󰜢",
+                    Field = "󰜢",
+                    Constructor = "",
+                    Enum = "󰕘",
+                    Interface = "󰜢",
+                    Function = "󰊕",
+                    Variable = "󰆧",
+                    Constant = "󰏿",
+                    String = "󰀬",
+                    Number = "󰎠",
+                    Boolean = "",
+                    Array = "󰅪",
+                    Object = "󰅩",
+                    Key = "󰌋",
+                    Null = "󰟢",
+                    Event = "",
+                    Operator = "󰆕",
+                    TypeParameter = "󰊄",
+                },
+            })
+            vim.keymap.set("n", "<leader>o", "<cmd>AerialToggle!<CR>", { desc = "Outline (функции/классы)" })
+            vim.keymap.set("n", "{", "<cmd>AerialPrev<CR>", { desc = "Предыдущий символ" })
+            vim.keymap.set("n", "}", "<cmd>AerialNext<CR>", { desc = "Следующий символ" })
+        end,
     },
 
     -- LSP И АВТОДОПОЛНЕНИЕ (ОБНОВЛЕНО ДЛЯ NEOVIM 0.11+)
     {
         "neovim/nvim-lspconfig",
         dependencies = {
-            "williamboman/mason.nvim", "williamboman/mason-lspconfig.nvim",
-            "hrsh7th/nvim-cmp", "hrsh7th/cmp-nvim-lsp", "hrsh7th/cmp-buffer", "hrsh7th/cmp-path",
-            "L3MON4D3/LuaSnip", "saadparwaiz1/cmp_luasnip",
+            "williamboman/mason.nvim",
+            "williamboman/mason-lspconfig.nvim",
+            "hrsh7th/nvim-cmp",
+            "hrsh7th/cmp-nvim-lsp",
+            "hrsh7th/cmp-buffer",
+            "hrsh7th/cmp-path",
+            "L3MON4D3/LuaSnip",
+            "saadparwaiz1/cmp_luasnip",
         },
         config = function()
             require("mason").setup()
-            require("mason-lspconfig").setup({ ensure_installed = { "pyright", "lua_ls", "bashls", "ts_ls", "html" } })
+            require("mason-lspconfig").setup({
+                ensure_installed = { "pyright", "lua_ls", "bashls", "ts_ls", "html" },
+            })
 
             local cmp = require("cmp")
             local luasnip = require("luasnip")
+            local capabilities = require("cmp_nvim_lsp").default_capabilities()
 
             cmp.setup({
-                snippet = { expand = function(args) luasnip.lsp_expand(args.body) end },
+                snippet = {
+                    expand = function(args)
+                        luasnip.lsp_expand(args.body)
+                    end,
+                },
                 mapping = cmp.mapping.preset.insert({
-                    ['<C-Space>'] = cmp.mapping.complete(),
-                    ['<CR>'] = cmp.mapping.confirm({ select = true }),
-                    ['<Tab>'] = cmp.mapping(function(fallback)
+                    ["<C-Space>"] = cmp.mapping.complete(),
+                    ["<CR>"] = cmp.mapping.confirm({ select = true }),
+                    ["<Tab>"] = cmp.mapping(function(fallback)
                         if cmp.visible() then
                             cmp.select_next_item()
                         elseif luasnip.expand_or_jumpable() then
-                            luasnip
-                                .expand_or_jump()
+                            luasnip.expand_or_jump()
                         else
                             fallback()
                         end
                     end, { "i", "s" }),
-                    ['<S-Tab>'] = cmp.mapping(function(fallback)
+                    ["<S-Tab>"] = cmp.mapping(function(fallback)
                         if cmp.visible() then
                             cmp.select_prev_item()
                         elseif luasnip.jumpable(-1) then
@@ -225,107 +453,306 @@ require("lazy").setup({
                         end
                     end, { "i", "s" }),
                 }),
-                sources = cmp.config.sources({ { name = 'nvim_lsp' }, { name = 'luasnip' } },
-                    { { name = 'buffer' }, { name = 'path' } }),
+                sources = cmp.config.sources(
+                    { { name = "nvim_lsp" }, { name = "luasnip" } },
+                    { { name = "buffer" }, { name = "path" } }
+                ),
             })
 
-            -- 1. Глобальные настройки для ВСЕХ LSP серверов (заменяет capabilities = capabilities)
-            vim.lsp.config['*'] = {
-                capabilities = require('cmp_nvim_lsp').default_capabilities()
+            vim.lsp.config["*"] = {
+                capabilities = capabilities,
             }
 
-            -- 2. Глобальный маппинг для LSP (заменяет on_attach = on_attach)
-            vim.api.nvim_create_autocmd('LspAttach', {
-                group = vim.api.nvim_create_augroup('UserLspConfig', {}),
+            vim.api.nvim_create_autocmd("LspAttach", {
+                group = vim.api.nvim_create_augroup("UserLspConfig", {}),
                 callback = function(ev)
                     local opts = { buffer = ev.buf, noremap = true, silent = true }
-                    vim.keymap.set('n', 'gd', vim.lsp.buf.definition, opts)
-                    vim.keymap.set('n', 'K', vim.lsp.buf.hover, opts)
-                    vim.keymap.set('n', '<leader>rn', vim.lsp.buf.rename, opts)
-                    vim.keymap.set('n', '<leader>ca', vim.lsp.buf.code_action, opts)
-                    vim.keymap.set('n', '<leader>f', function() vim.lsp.buf.format { async = true } end, opts)
+
+                    vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)
+                    vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
+                    vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)
+                    vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, opts)
+                    vim.keymap.set("n", "<leader>f", function()
+                        vim.lsp.buf.format({ async = true })
+                    end, opts)
                 end,
             })
 
-            -- Настройка Pyright с авто-поиском venv
-            local function find_venv()
-                local cwd = vim.fn.getcwd()
-                for _, name in ipairs({ "venv", ".venv", "env" }) do
-                    if vim.fn.isdirectory(cwd .. "/" .. name) == 1 then return name, cwd end
+            local function normalize_dir(path)
+                if not path or path == "" then
+                    return nil
                 end
-                return nil, cwd
+
+                path = vim.fn.fnamemodify(path, ":p")
+
+                if vim.fn.isdirectory(path) ~= 1 then
+                    path = vim.fn.fnamemodify(path, ":h")
+                end
+
+                return path
             end
 
-            -- 3. НОВЫЙ СИНТАКСИС: vim.lsp.config вместо require("lspconfig").server.setup
-            vim.lsp.config['pyright'] = {
-                cmd = { 'pyright-langserver', '--stdio' },
-                filetypes = { 'python' },
-                root_markers = { 'pyproject.toml', 'setup.py', 'requirements.txt', 'manage.py', '.git' },
-                settings = {
-                    python = {
-                        analysis = { typeCheckingMode = "basic", autoSearchPaths = true, diagnosticMode = "workspace" }
-                    }
-                },
-                on_new_config = function(new_config, new_root_dir)
-                    local venv_name, venv_path = find_venv()
-                    if venv_name then
-                        new_config.settings.python.venvPath = venv_path
-                        new_config.settings.python.venv = venv_name
+            local function is_venv_dir(path)
+                if vim.fn.isdirectory(path) ~= 1 then
+                    return false
+                end
+
+                if vim.fn.filereadable(path .. "/pyvenv.cfg") == 1 then
+                    return true
+                end
+
+                if vim.fn.has("win32") == 1 then
+                    return vim.fn.executable(path .. "/Scripts/python.exe") == 1
+                        or vim.fn.executable(path .. "/python.exe") == 1
+                end
+
+                return vim.fn.executable(path .. "/bin/python") == 1
+                    or vim.fn.executable(path .. "/bin/python3") == 1
+            end
+
+            local function find_venv(root_dir)
+                local base_path = normalize_dir(root_dir) or vim.fn.getcwd()
+                base_path = vim.fn.fnamemodify(base_path, ":p")
+
+                for _, name in ipairs({ ".venv", "venv", "env" }) do
+                    local venv_path = base_path .. "/" .. name
+                    if is_venv_dir(venv_path) then
+                        return name, base_path, venv_path
                     end
                 end
-            }
 
-            vim.lsp.config['lua_ls'] = {
-                cmd = { 'lua-language-server' },
-                filetypes = { 'lua' },
-                root_markers = { '.luarc.json', '.luarc.jsonc', '.git' },
-                settings = {
-                    Lua = {
-                        runtime = { version = 'LuaJIT' },
-                        diagnostics = { globals = { 'vim' } },
-                        workspace = { library = vim.api.nvim_get_runtime_file("", true) },
-                        telemetry = { enable = false }
-                    }
-                }
-            }
+                return nil, base_path, nil
+            end
 
-            vim.lsp.config['bashls'] = {
-                cmd = { 'bash-language-server', 'start' },
-                filetypes = { 'sh', 'bash' },
-            }
+            local function get_python_executable(venv_path)
+                if vim.fn.has("win32") == 1 then
+                    if vim.fn.executable(venv_path .. "/Scripts/python.exe") == 1 then
+                        return venv_path .. "/Scripts/python.exe"
+                    end
 
-            vim.lsp.config['ts_ls'] = {
-                cmd = { 'typescript-language-server', '--stdio' },
-                filetypes = { 'javascript', 'typescript', 'javascriptreact', 'typescriptreact' },
-                root_markers = { 'package.json', 'tsconfig.json', 'jsconfig.json', '.git' },
-            }
+                    if vim.fn.executable(venv_path .. "/python.exe") == 1 then
+                        return venv_path .. "/python.exe"
+                    end
 
-            vim.lsp.config['html'] = {
-                cmd = { 'vscode-html-language-server', '--stdio' },
-                filetypes = { 'html', 'htmldjango' },
-                init_options = {
-                    configurationSection = { 'html', 'css', 'javascript' },
-                    embeddedLanguages = { css = true, javascript = true },
-                    provideFormatter = true
+                    return venv_path .. "/Scripts/python.exe"
+                else
+                    if vim.fn.executable(venv_path .. "/bin/python") == 1 then
+                        return venv_path .. "/bin/python"
+                    end
+
+                    if vim.fn.executable(venv_path .. "/bin/python3") == 1 then
+                        return venv_path .. "/bin/python3"
+                    end
+
+                    return venv_path .. "/bin/python"
+                end
+            end
+
+            local function apply_pyright_venv(settings, root_dir)
+                if type(settings) ~= "table" then
+                    return
+                end
+
+                local venv_name, venv_parent, venv_path = find_venv(root_dir)
+                if not venv_name or not venv_path then
+                    return
+                end
+
+                settings.python = settings.python or {}
+                settings.python.analysis = settings.python.analysis or {}
+
+                -- То, что обычно понимает Pyright через LSP
+                settings.python.analysis.venvPath = venv_parent
+                settings.python.analysis.venv = venv_name
+
+                -- Дублируем на случай совместимости с разными клиентами/сборками
+                settings.python.venvPath = venv_parent
+                settings.python.venv = venv_name
+                settings.python.pythonPath = get_python_executable(venv_path)
+            end
+            local pyright_settings = {
+                python = {
+                    analysis = {
+                        typeCheckingMode = "basic",
+                        autoSearchPaths = true,
+                        diagnosticMode = "workspace",
+                    },
                 },
             }
 
-            -- 4. Включаем серверы (заменяет собой вызовы setup())
-            vim.lsp.enable('pyright')
-            vim.lsp.enable('lua_ls')
-            vim.lsp.enable('bashls')
-            vim.lsp.enable('ts_ls')
-            vim.lsp.enable('html')
+            vim.lsp.config["pyright"] = {
+                capabilities = capabilities,
+                cmd = { "pyright-langserver", "--stdio" },
+                filetypes = { "python" },
+                root_markers = {
+                    "pyproject.toml",
+                    "setup.py",
+                    "requirements.txt",
+                    "manage.py",
+                    ".git",
+                },
+                settings = pyright_settings,
+
+                before_init = function(params, config)
+                    local root_dir = config and config.root_dir or nil
+
+                    if not root_dir and params and params.rootUri then
+                        local ok, fname = pcall(vim.uri_to_fname, params.rootUri)
+                        if ok then
+                            root_dir = fname
+                        end
+                    end
+
+                    if not root_dir and params and params.rootPath then
+                        root_dir = params.rootPath
+                    end
+
+                    config.settings = vim.deepcopy(pyright_settings)
+                    apply_pyright_venv(config.settings, root_dir)
+                end,
+
+                on_init = function(client)
+                    if not client.config.settings then
+                        client.config.settings = vim.deepcopy(pyright_settings)
+                    end
+
+                    local root_dir = client.root_dir or client.config.root_dir
+                    apply_pyright_venv(client.config.settings, root_dir)
+
+                    vim.schedule(function()
+                        pcall(function()
+                            client.notify("workspace/didChangeConfiguration", {
+                                settings = client.config.settings,
+                            })
+                        end)
+                    end)
+                end,
+            }
+
+            vim.lsp.config["lua_ls"] = {
+                capabilities = capabilities,
+                cmd = { "lua-language-server" },
+                filetypes = { "lua" },
+                root_markers = { ".luarc.json", ".luarc.jsonc", ".git" },
+                settings = {
+                    Lua = {
+                        runtime = { version = "LuaJIT" },
+                        diagnostics = { globals = { "vim" } },
+                        workspace = {
+                            library = vim.api.nvim_get_runtime_file("", true),
+                            checkThirdParty = false,
+                        },
+                        telemetry = { enable = false },
+                    },
+                },
+            }
+
+            vim.lsp.config["bashls"] = {
+                capabilities = capabilities,
+                cmd = { "bash-language-server", "start" },
+                filetypes = { "sh", "bash" },
+            }
+
+            vim.lsp.config["ts_ls"] = {
+                capabilities = capabilities,
+                cmd = { "typescript-language-server", "--stdio" },
+                filetypes = {
+                    "javascript",
+                    "typescript",
+                    "javascriptreact",
+                    "typescriptreact",
+                },
+                root_markers = {
+                    "package.json",
+                    "tsconfig.json",
+                    "jsconfig.json",
+                    ".git",
+                },
+            }
+
+            vim.lsp.config["html"] = {
+                capabilities = capabilities,
+                cmd = { "vscode-html-language-server", "--stdio" },
+                filetypes = { "html", "htmldjango" },
+                init_options = {
+                    configurationSection = { "html", "css", "javascript" },
+                    embeddedLanguages = {
+                        css = true,
+                        javascript = true,
+                    },
+                    provideFormatter = true,
+                },
+            }
+
+            vim.lsp.enable({
+                "pyright",
+                "lua_ls",
+                "bashls",
+                "ts_ls",
+                "html",
+            })
         end,
     },
 
-    -- ФОРМАТИРОВАНИЕ
+    -- ФОРМАТИРОВАНИЕ (CONFORM) С ISORT, BLACK И AUTOPEP8
     {
         "stevearc/conform.nvim",
         config = function()
             require("conform").setup({
-                formatters_by_ft = { python = { "isort", "black" }, lua = { "stylua" }, javascript = { "prettier" }, typescript = { "prettier" }, html = { "djlint" }, htmldjango = { "djlint" }, css = { "prettier" } },
-                format_on_save = { timeout_ms = 1000, lsp_fallback = true },
+                formatters_by_ft = {
+                    python = { "isort", "black", "autopep8" },
+                    lua = { "stylua" },
+                    javascript = { "prettier" },
+                    typescript = { "prettier" },
+                    html = { "djlint" },
+                    htmldjango = { "djlint" },
+                    css = { "prettier" },
+                },
+                formatters = {
+                    black = {
+                        command = "black",
+                        args = {
+                            "--skip-string-normalization", "--fast",
+                            "--line-length", "79",
+                            "-"
+                        },
+                        stdin = true,
+                    },
+                    isort = {
+                        command = "isort",
+                        args = {
+                            "--stdout",
+                            "--profile",
+                            "black",
+                            "--line-length", "79",
+                            "$FILENAME"
+                        },
+                        stdin = false,
+                    },
+                    autopep8 = {
+                        command = "autopep8",
+                        args = {
+                            "--select", "E501",
+                            "--max-line-length", "79",
+                            "-"
+                        },
+                        stdin = true,
+                    },
+                    djlint = {
+                        command = "djlint",
+                        args = { "--reformat", "--indent", "2", "-" },
+                        stdin = true,
+                    },
+                    prettier = {
+                        command = "prettier",
+                        args = { "--stdin-filepath", "$FILENAME" },
+                        stdin = true,
+                    },
+                },
+                format_on_save = {
+                    timeout_ms = 2000,
+                    lsp_fallback = true,
+                },
             })
             vim.keymap.set('n', '<leader>lf', '<cmd>lua require("conform").format()<cr>', { desc = "Форматировать" })
         end,
@@ -352,7 +779,7 @@ require("lazy").setup({
         end,
     },
 
-    -- DAP (ОТЛАДКА) - ИСПРАВЛЕНО И УЛУЧШЕНО
+    -- DAP (ОТЛАДКА)
     {
         "mfussenegger/nvim-dap",
         dependencies = {
@@ -365,11 +792,9 @@ require("lazy").setup({
             local dapui = require("dapui")
             dapui.setup()
 
-            -- ИСПРАВЛЕНО: используем nvim-dap-python как положено
             require("dap-python").setup("python")
             require("dap-python").test_runner = "pytest"
 
-            -- Маппинги DAP
             local map = vim.keymap.set
             map('n', '<F5>', dap.continue, { desc = "Продолжить отладку" })
             map('n', '<F9>', dap.toggle_breakpoint, { desc = "Точка останова" })
@@ -378,7 +803,6 @@ require("lazy").setup({
             map('n', '<F12>', dap.step_out, { desc = "Шаг наружу" })
             map('n', '<leader>du', dapui.toggle, { desc = "Показать/скрыть UI отладки" })
 
-            -- Маппинги для pytest от nvim-dap-python
             map('n', '<leader>dt', function() require("dap-python").test_method() end,
                 { desc = "Отладить тест под курсором" })
             map('n', '<leader>dc', function() require("dap-python").test_class() end,
@@ -391,26 +815,25 @@ require("lazy").setup({
         end,
     },
 
-    -- НОВОЕ: PYTEST.NVIM
+    -- PYTEST.NVIM
     {
         "richardhapb/pytest.nvim",
         dependencies = { "nvim-treesitter/nvim-treesitter" },
         ft = { "python" },
         config = function()
             require("pytest").setup({
-                django = { enabled = true }, -- Автоматически понимает Django проекты
+                django = { enabled = true },
             })
         end,
     },
 
-    -- НОВОЕ: VIM-SLIME (Улучшенная отправка кода в Tmux REPL)
+    -- VIM-SLIME
     {
         "jpalardy/vim-slime",
         config = function()
             vim.g.slime_target = "tmux"
             vim.g.slime_default_config = { socket_name = "default", target_pane = "{right}" }
             vim.g.slime_dont_ask_default = 1
-            -- Отправка абзаца в REPL: <leader>ss
             vim.keymap.set({ "n", "v" }, "<leader>ss", "<Plug>SlimeLineSend",
                 { desc = "Отправить строку/выделение в REPL" })
         end,
@@ -430,10 +853,10 @@ require("lazy").setup({
                     changedelete = { text = '~' },
                     untracked    = { text = '┆' },
                 },
-                current_line_blame = true, -- Включает виртуальный текст с автором строки
+                current_line_blame = true,
                 current_line_blame_opts = {
                     virt_text = true,
-                    virt_text_pos = 'eol', -- 'eol' | 'overlay' | 'right_align'
+                    virt_text_pos = 'eol',
                     delay = 500,
                 },
                 on_attach = function(bufnr)
@@ -445,7 +868,6 @@ require("lazy").setup({
                         vim.keymap.set(mode, l, r, opts)
                     end
 
-                    -- Навигация по изменениям
                     map('n', ']c', function()
                         if vim.wo.diff then return ']c' end
                         vim.schedule(function() gs.next_hunk() end)
@@ -458,7 +880,6 @@ require("lazy").setup({
                         return '<Ignore>'
                     end, { expr = true, desc = "Предыдущее изменение (Git)" })
 
-                    -- Действия с блоками кода (hunks)
                     map('n', '<leader>hs', gs.stage_hunk, { desc = "Git: Закоммитить блок (Stage Hunk)" })
                     map('n', '<leader>hr', gs.reset_hunk, { desc = "Git: Отменить изменения в блоке (Reset Hunk)" })
                     map('v', '<leader>hs', function() gs.stage_hunk { vim.fn.line('.'), vim.fn.line('v') } end,
@@ -477,12 +898,99 @@ require("lazy").setup({
         end,
     },
 
+    -- =============================================
+    -- УДОБСТВА И НАВИГАЦИЯ
+    -- =============================================
+
+    -- 1. Шпаргалка по клавишам
+    {
+        "folke/which-key.nvim",
+        event = "VeryLazy",
+        init = function()
+            vim.o.timeout = true
+            vim.o.timeoutlen = 300
+        end,
+        config = function()
+            -- v3: постоянной шпаргалки лидера здесь нет — она живёт в lualine.
+            -- Здесь только раскрытие подсказки по нажатию: узкое окно, одна
+            -- колонка, без рамки, чтобы не перекрывать код.
+            require("which-key").setup({
+                delay = function(ctx)
+                    return ctx.plugin and 0 or 150
+                end,
+                expand = function(node)
+                    -- группы с 1-2 потомками показывать сразу, остальные — свёрнутыми
+                    return node and #node:children() <= 2 or false
+                end,
+                layout = {
+                    width = { min = 18, max = 30 },
+                    spacing = 2,
+                },
+                win = {
+                    no_overlap = true,
+                    padding = { 0, 1 },
+                    title = false,
+                    border = "none",
+                    wo = { winblend = 0 },
+                },
+                keys = {
+                    scroll_down = "<c-d>",
+                    scroll_up = "<c-u>",
+                },
+                show_help = false,
+                show_keys = true,
+                sort = { "local", "group", "alphanum" },
+                notify = true,
+            })
+        end,
+    },
+
+    -- 2. Обертывание текста в кавычки/скобки/теги
+    {
+        "kylechui/nvim-surround",
+        version = "*",
+        event = "VeryLazy",
+        config = function()
+            require("nvim-surround").setup({})
+        end
+    },
+
+    -- 3. Поиск TODO/FIXME по проекту
+    {
+        "folke/todo-comments.nvim",
+        dependencies = { "nvim-lua/plenary.nvim" },
+        config = function()
+            require("todo-comments").setup({
+                signs = true,
+            })
+            local builtin = require("telescope.builtin")
+            vim.keymap.set('n', '<leader>ft', "<cmd>TodoTelescope<CR>", { desc = "Найти TODO/FIXME" })
+        end,
+    },
+
+    -- 4. Список ошибок во всем проекте
+    {
+        "folke/trouble.nvim",
+        dependencies = { "nvim-tree/nvim-web-devicons" },
+        config = function()
+            require("trouble").setup({
+                icons = {},
+            })
+            vim.keymap.set("n", "<leader>xx", function() require("trouble").toggle() end,
+                { desc = "Список ошибок (Trouble)" })
+            vim.keymap.set("n", "<leader>xw", function() require("trouble").toggle("workspace_diagnostics") end,
+                { desc = "Ошибки проекта" })
+            vim.keymap.set("n", "<leader>xd", function() require("trouble").toggle("document_diagnostics") end,
+                { desc = "Ошибки файла" })
+        end,
+    },
+
     {
         "NeogitOrg/neogit",
         dependencies = {
             "nvim-lua/plenary.nvim",
-            "sindrets/diffview.nvim",        -- Необязательно, но отлично интегрируется
-            "nvim-telescope/telescope.nvim", -- Необязательно
+            "sindrets/diffview.nvim",
+            "nvim-telescope/telescope.nvim",
         },
         config = function()
             require('neogit').setup({
@@ -515,41 +1023,144 @@ require("lazy").setup({
     { "tpope/vim-dadbod",             lazy = true,                                                                                    cmd = { "DB", "DBUI" } },
     { "kristijanhusak/vim-dadbod-ui", dependencies = { "tpope/vim-dadbod", "kristijanhusak/vim-dadbod-completion" },                  lazy = true,           cmd = { "DBUI", "DBUIToggle" } },
 
-    -- ЛОКАЛЬНЫЙ AI (ИСПРАВЛЕНО: английские ключи для промптов)
+    -- AI АССИСТЕНТ
+    --
+    -- Заменил gen.nvim на codecompanion.nvim. Причины конкретные:
+    --   1. gen.nvim склеивает URL сам ("http://" + host + port), из-за
+    --      переданного host со схемой получалось http://http://127.0.0.1:8080:11434
+    --   2. опция engine = "openai" в gen.nvim не существует — в коде плагина
+    --      ноль упоминаний, значение уходило в пустоту
+    --   3. codecompanion — чистый Lua, зависимость только plenary (уже стоит),
+    --      в отличие от avante.nvim, которому нужен Rust или бинарник на 18 МБ
+    --
+    -- Ключи берутся из переменных окружения, в конфиге их нет.
+    -- Пока переменная не задана, плагин работает, но запросы падают —
+    -- об этом сообщает стартовое уведомление ниже.
+    --
+    -- Адаптер opencode-zen: провайдер Hermes, base_url https://opencode.ai/zen/v1,
+    -- модель space-bunny-free. Проверен curl'ом — отвечает 200.
+    -- Ключ лежит в ~/.hermes/.env как OPENCODE_ZEN_API_KEY, поэтому
+    -- options.env ниже подтягивает его ОТТУДА и не требует дублирования
+    -- секрета в .zshrc или в этом файле.
     {
-        "David-Kunz/gen.nvim",
-        config = function()
-            require('gen').setup({
-                model = "Jackrong/Qwopus3.5-9B-Coder-GGUF:Q5_K_M",
-                host = "http://127.0.0.1:8080",
-                engine = "openai",
-                show_prompt = true,
-                show_model = true,
-                no_auto_close = false,
-                display_mode = "float",
-            })
-
-            -- Используем английские ключи, чтобы избежать проблем с парсингом кириллицы в :Gen
-            require('gen').prompts = {
-                ["ask"] = {
-                    prompt =
-                    "Вопрос о следующем коде:\n```$filetype\n$text\n```\n\nВопрос: $input\n\nОтветь на русском языке. Если нужно показать код, оформляй его в Markdown.",
+        "olimorris/codecompanion.nvim",
+        dependencies = { "nvim-lua/plenary.nvim" },
+        cmd = { "CodeCompanion", "CodeCompanionChat", "CodeCompanionActions" },
+        opts = {
+            opts = {
+                log_level = "WARN",
+                send_code = true,
+            },
+            -- Свой endpoint задаётся через strategies.chat.adapter таблицей:
+            -- resolve() на init.lua:321-330 идёт в Adapter.new(adapter) и НЕ
+            -- применяет strategies.chat.opts — init_adapter зовёт
+            -- resolve(config.interactions.chat.adapter) БЕЗ opts (chat/init.lua:417).
+            -- Поэтому url в chat.opts молча игнорировался.
+            strategies = {
+                -- Адаптер собирает cc_adapter() выше: url ПОЛНЫЙ (до
+                -- /chat/completions), модель через schema.model.default.
+                -- Оба поля на верхнем уровне strategies.chat молча
+                -- игнорируются — init_adapter зовёт resolve() без opts
+                -- (chat/init.lua:417), и запрос уходил на api.openai.com, где
+                -- OpenAI отвечает 403 unsupported_country_region_territory
+                -- (в логе: set-cookie Domain=api.openai.com, cf-ray -FRA).
+                -- Общие для chat и inline опции адаптера. Именно отсюда
+                -- resolve() (init.lua:347) берёт параметры:
+                -- extend(config.adapters.http[adapter], opts).
+                --
+                -- Раньше url был отдельным полем в strategies.chat и молча
+                -- игнорировался — запрос уходил на api.openai.com, где OpenAI
+                -- отвечает 403 unsupported_country_region_territory (в логе
+                -- ответа видно set-cookie Domain=api.openai.com, cf-ray -FRA).
+                chat = {
+                    adapter = cc_adapter,
                 },
-                ["explain"] = {
-                    prompt =
-                    "Объясни следующий код:\n```$filetype\n$text\n```\n\nДай подробное объяснение на русском языке.",
+                inline = {
+                    adapter = cc_adapter,
                 },
-                ["generate"] = {
-                    prompt =
-                    "Сгенерируй код на языке $filetype по описанию:\n$input\n\nПиши чистый, эффективный код. Ответь на русском языке, код оформи в блок.",
+                -- Фон по умолчанию шлёт ТЕКСТ ЗАПРОСА на
+                -- api.githubcopilot.com (adapter = "copilot" в config.lua:83) —
+                -- он генерирует заголовок чата при каждом открытии. Ключ
+                -- opencode-zen при этом не уходит, там свой GitHub OAuth-токен,
+                -- но содержимое запроса уходило на серверы GitHub. Выключаем.
+                background = {
+                    enabled = false,
                 },
-            }
+            },
+            slash_commands = {
+                {
+                    name = "ask",
+                    description = "Спросить о коде",
+                    -- Сигнатура пользовательских slash-команд:
+                    -- { Chat, config, context, opts }, НЕ function(chat)
+                    callback = function(Chat, _, _, _)
+                        local bufnr = vim.api.nvim_get_current_buf()
+                        local code = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+                        Chat:add_user_message({
+                            content = ("Вопрос о следующем коде:\n```%s\n%s\n```\n\nОтветь на русском языке."):format(
+                                vim.bo[bufnr].filetype,
+                                code
+                            ),
+                            opts = { is_visual = true },
+                        })
+                        Chat:submit()
+                    end,
+                    opts = { index = 2, desc = "Спросить о коде" },
+                },
+                {
+                    name = "explain",
+                    description = "Объяснить код",
+                    callback = function(Chat, _, _, _)
+                        local bufnr = vim.api.nvim_get_current_buf()
+                        local code = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+                        Chat:add_user_message({
+                            content = ("Объясни следующий код:\n```%s\n%s\n```\n\nДай подробное объяснение на русском языке."):format(
+                                vim.bo[bufnr].filetype,
+                                code
+                            ),
+                            opts = { is_visual = true },
+                        })
+                        Chat:submit()
+                    end,
+                    opts = { index = 3, desc = "Объяснить код" },
+                },
+            },
+        },
+        config = function(_, opts)
+            require("codecompanion").setup(opts)
 
             local map = vim.keymap.set
-            map({ 'n', 'v' }, '<leader>oo', ':Gen ask<CR>', { desc = "Спросить о коде (AI)", silent = true })
-            map({ 'n', 'v' }, '<leader>oe', ':Gen explain<CR>', { desc = "Объяснить код (AI)", silent = true })
-            map({ 'n', 'v' }, '<leader>og', ':Gen generate<CR>', { desc = "Сгенерировать код (AI)", silent = true })
-            map({ 'n', 'v' }, '<leader>oc', ':Gen<CR>', { desc = "Выбрать AI промпт из списка", silent = true })
+            map({ "n" }, "<leader>oa", "<cmd>CodeCompanionChat<CR>", { desc = "AI: открыть чат", silent = true })
+            map({ "n" }, "<leader>oo", "<cmd>CodeCompanionChat ask<CR>", { desc = "AI: спросить о коде", silent = true })
+            map({ "n", "v" }, "<leader>oe", "<cmd>CodeCompanionChat explain<CR>", { desc = "AI: объяснить код", silent = true })
+            map({ "n", "v" }, "<leader>og", "<cmd>CodeCompanion inline<CR>", { desc = "AI: сгенерировать по описанию", silent = true })
+            map({ "n" }, "<leader>oc", "<cmd>CodeCompanion<CR>", { desc = "AI: выбор действия", silent = true })
+
+            -- Сообщаем оба состояния. Раньше подсказка молчала при
+            -- отсутствии ключа, и пользователь не понимал, почему не отвечает.
+            -- Ключ лежит в файле, а не в окружении, поэтому проверяем файл.
+            vim.defer_fn(function()
+                local envfile = vim.fn.expand("~/.hermes/.env")
+                local has_file_key = false
+                if vim.fn.filereadable(envfile) == 1 then
+                    local pat = string.char(94) .. "OPENCODE_ZEN_API_KEY" .. string.char(61)
+                    local out = vim.fn.system({ "grep", "-c", "-e", pat, envfile })
+                    local num = tonumber(vim.trim(out or "")) or 0
+                    has_file_key = num > 0
+                end
+                local has_env_key = vim.env.OPENAI_API_KEY or vim.env.OPENROUTER_API_KEY
+                    or vim.env.GEMINI_API_KEY or vim.env.ANTHROPIC_API_KEY
+
+                if has_file_key or has_env_key then
+                    vim.notify("🤖 AI: ключ найден. <Пробел>oa — чат, <Пробел>oe — объяснить, <Пробел>og — сгенерировать", vim.log.levels.INFO)
+                else
+                    vim.notify(
+                        "🤖 AI: ключ не найден. Ожидается OPENCODE_ZEN_API_KEY в ~/.hermes/.env "
+                            .. "или один из OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY в окружении",
+                        vim.log.levels.WARN
+                    )
+                end
+            end, 1200)
         end,
     },
 })
