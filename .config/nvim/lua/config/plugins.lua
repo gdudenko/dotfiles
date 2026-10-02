@@ -322,7 +322,14 @@ require("lazy").setup({
         build = ":TSUpdate",
         config = function()
             require("nvim-treesitter.configs").setup({
-                ensure_installed = { "python", "lua", "bash", "javascript", "typescript", "html", "css" },
+                ensure_installed = {
+                    "python", "lua", "bash", "javascript", "typescript", "html", "css",
+                    -- Нужны самому codecompanion: yaml — парсит frontmatter промптов,
+                    -- markdown и markdown_inline — разбирают сообщения и буфер чата
+                    -- (ts_parse_buffer в chat/context.lua),
+                    -- json — конфиги и ответы API
+                    "yaml", "markdown", "markdown_inline", "json", "toml",
+                },
                 highlight = { enable = true, additional_vim_regex_highlighting = false },
                 indent = { enable = true },
             })
@@ -1095,6 +1102,22 @@ require("lazy").setup({
             -- resolve(config.interactions.chat.adapter) БЕЗ opts (chat/init.lua:417).
             -- Поэтому url в chat.opts молча игнорировался.
             strategies = {
+                -- Контекст файла. /buffer в плагине есть, но по умолчанию
+                -- шлёт только ДИФФ (default_params = "diff"), а для вопроса
+                -- «объясни этот код» нужен весь файл — поэтому all.
+                --
+                -- Ключ обязательно strategies.shared, а не interactions:
+                -- config.lua:1625 делает args.strategies = nil и пересобирает
+                -- interactions ИЗ defaults, из-за чего любой мой interactions
+                -- затирался молча (проверено — default_params оставался diff).
+                shared = {
+                    editor_context = {
+                        buffer = { opts = { default_params = "all", contains_code = true } },
+                        selection = { opts = { contains_code = true } },
+                        viewport = { opts = { contains_code = true } },
+                        diagnostics = { opts = { contains_code = true } },
+                    },
+                },
                 -- Адаптер собирает cc_adapter() выше: url ПОЛНЫЙ (до
                 -- /chat/completions), модель через schema.model.default.
                 -- Оба поля на верхнем уровне strategies.chat молча
@@ -1168,6 +1191,54 @@ require("lazy").setup({
             require("codecompanion").setup(opts)
 
             local map = vim.keymap.set
+            -- Прицепить текущий файл к чату.
+            --
+            -- НЕ через CodeCompanionChat add: там get_context()
+            -- (utils/context.lua:103) в обычном режиме возвращает ПУСТЫЕ
+            -- lines — они заполняются только при визуальном выделении.
+            -- Из-за этого в сообщение уходило «Here is some code from
+            -- /path/file.py:» и ````python```` без единой строки кода,
+            -- а модель отвечала «the provided snippet is empty».
+            --
+            -- Здесь читаем буфер напрямую через format_buffer_for_llm —
+            -- он отдаёт полное содержимое с нумерацией строк.
+            local attach_buffer = function()
+                local bufnr = vim.api.nvim_get_current_buf()
+                local chat = require("codecompanion").last_chat()
+                if not chat then
+                    chat = require("codecompanion").chat()
+                    if not chat then
+                        vim.notify("AI: не удалось открыть чат", vim.log.levels.ERROR)
+                        return
+                    end
+                end
+                local path = vim.api.nvim_buf_get_name(bufnr)
+                local ok, buf = pcall(
+                    require("codecompanion.interactions.chat.helpers").format_buffer_for_llm,
+                    bufnr,
+                    path,
+                    { message = "Here is the content of the file I have open:" }
+                )
+                if not ok then
+                    vim.notify("AI: не удалось прочитать файл — " .. tostring(buf), vim.log.levels.ERROR)
+                    return
+                end
+                chat:add_message({
+                    role = "user",
+                    content = buf.content,
+                }, {
+                    _meta = {
+                        source = "editor_context",
+                        tag = require("codecompanion.interactions.shared.tags").BUFFER,
+                    },
+                    context = { id = buf.id, path = path },
+                    visible = false,
+                })
+                vim.notify(("AI: файл %s добавлен в чат"):format(vim.fn.fnamemodify(path, ":t")),
+                    vim.log.levels.INFO)
+            end
+            map({ "n" }, "<leader>ob", attach_buffer, { desc = "AI: прицепить текущий файл", silent = true })
+            map({ "n" }, "<leader>oo", "<cmd>CodeCompanionChat ask<CR>", { desc = "AI: спросить о коде", silent = true })
             map({ "n" }, "<leader>oa", "<cmd>CodeCompanionChat<CR>", { desc = "AI: открыть чат", silent = true })
             map({ "n" }, "<leader>oo", "<cmd>CodeCompanionChat ask<CR>", { desc = "AI: спросить о коде", silent = true })
             map({ "n", "v" }, "<leader>oe", "<cmd>CodeCompanionChat explain<CR>", { desc = "AI: объяснить код", silent = true })
