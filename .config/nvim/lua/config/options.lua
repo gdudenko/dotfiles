@@ -15,6 +15,12 @@ vim.opt.updatetime = 300
 vim.opt.timeoutlen = 500
 vim.opt.syntax = 'on'
 
+-- Пустой пустой экран: интро-текст nvim (Kuwasha, type :help ...) занимал
+-- треть окна и висел поверх подсказок which-key, пока не нажмёшь Enter.
+-- В файлах это не видно, поэтому включение безобидное, но при пустом буфере
+-- мешало читать окно подсказок.
+vim.opt.shortmess:append("I")
+
 -- Автоматическое определение типа файла Django
 vim.g.django_filetype = 1
 vim.g.django_highlight_all = 1
@@ -87,7 +93,9 @@ map({ 'n', 'v' }, 'ф', 'a', { noremap = true })
 -- Системные команды
 map('n', '<leader>w', '<cmd>w<CR>', { desc = "Сохранить" })
 map('n', '<leader>qq', '<cmd>q<CR>', { desc = "Закрыть" })
-map('n', '<leader>r', '<cmd>source $MYVIMRC<CR>', { desc = "Перезагрузить конфиг" })
+-- :source без аргументов надёжнее $MYVIMRC: переменная объявлена в самом nvim
+-- и может отсутствовать в нестандартных окружениях.
+map('n', '<leader>r', '<cmd>source<CR>', { desc = "Перезагрузить nvim" })
 
 -- Диагностика
 map('n', '<leader>e', '<cmd>lua vim.diagnostic.open_float()<CR>', { desc = "Показать диагностику" })

@@ -803,9 +803,11 @@ require("lazy").setup({
             map('n', '<F12>', dap.step_out, { desc = "Шаг наружу" })
             map('n', '<leader>du', dapui.toggle, { desc = "Показать/скрыть UI отладки" })
 
-            map('n', '<leader>dt', function() require("dap-python").test_method() end,
+            -- Клавиша dx, а не dt: dt принадлежит telescope (поиск Django
+            -- тегов), и DAP молча перезаписывал его — поиск был недостижим.
+            map('n', '<leader>dx', function() require("dap-python").test_method() end,
                 { desc = "Отладить тест под курсором" })
-            map('n', '<leader>dc', function() require("dap-python").test_class() end,
+            map('n', '<leader>dC', function() require("dap-python").test_class() end,
                 { desc = "Отладить класс под курсором" })
 
             dap.listeners.before.attach.dapui_config = function() dapui.open() end
@@ -914,6 +916,23 @@ require("lazy").setup({
             -- v3: постоянной шпаргалки лидера здесь нет — она живёт в lualine.
             -- Здесь только раскрытие подсказки по нажатию: узкое окно, одна
             -- колонка, без рамки, чтобы не перекрывать код.
+            -- Названия групп для which-key.
+            --
+            -- Без них v3 показывает «+4 keymaps» вместо смысла. Ставим через
+            -- wk.add: этот способ помечает узел именно как группу, не создавая
+            -- лишней команды (в отличие от keymap.set, который занял бы сам
+            -- префикс и вытеснил бы <leader>f — он одновременно команда LSP-формат).
+            require("which-key").add({
+                { "<leader>f", group = "Поиск" },
+                { "<leader>p", group = "Python" },
+                { "<leader>x", group = "Ошибки" },
+                { "<leader>d", group = "Django" },
+                { "<leader>g", group = "Git" },
+                { "<leader>h", group = "Git: hunks" },
+                { "<leader>o", group = "Outline" },
+                { "<leader>t", group = "Tmux" },
+            })
+
             require("which-key").setup({
                 delay = function(ctx)
                     return ctx.plugin and 0 or 150
@@ -923,8 +942,11 @@ require("lazy").setup({
                     return node and #node:children() <= 2 or false
                 end,
                 layout = {
-                    width = { min = 18, max = 30 },
-                    spacing = 2,
+                    -- min/max в символах НА КОЛОНКУ. Было 18-30, и описания
+                    -- вроде "Символы файла (функции/классы)" резались
+                    -- многоточием. 24-46 держит их целиком на окне 110+.
+                    width = { min = 24, max = 46 },
+                    spacing = 3,
                 },
                 win = {
                     no_overlap = true,
@@ -936,6 +958,17 @@ require("lazy").setup({
                 keys = {
                     scroll_down = "<c-d>",
                     scroll_up = "<c-u>",
+                },
+                icons = {
+                    -- Пустая строка убирает лишний символ "+" перед названием
+                    -- группы. Раньше читалось как "+Поиск и файлы" — плюс
+                    -- ничего не значил и дублировал сам факт группировки.
+                    group = "",
+                    breadcrumb = "»",
+                    separator = " ",
+                    mappings = false,
+                    colors = false,
+                    rules = {},
                 },
                 show_help = false,
                 show_keys = true,
@@ -1045,7 +1078,12 @@ require("lazy").setup({
     {
         "olimorris/codecompanion.nvim",
         dependencies = { "nvim-lua/plenary.nvim" },
+        -- Команды И клавиши. Одного cmd мало: при cmd config() с маппингами
+        -- не выполняется, пока команду не вызвать — но вызвать её можно было
+        -- только по несуществующей клавише. Замкнутый круг, из-за которого
+        -- <leader>oo не существовал. event = "VeryLazy" разрывает его.
         cmd = { "CodeCompanion", "CodeCompanionChat", "CodeCompanionActions" },
+        event = "VeryLazy",
         opts = {
             opts = {
                 log_level = "WARN",

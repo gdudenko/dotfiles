@@ -130,8 +130,8 @@ end
 -- Маппинги для Venv и Tmux
 local map = vim.keymap.set
 -- Добавил <leader>np (возможно, вы имели в виду именно его)
-map('n', '<leader>np', VenvManager.select_venv, { desc = 'Select/Create Python venv' })
-map('n', '<leader>pv', VenvManager.select_venv, { desc = 'Select Python venv' })
+map('n', '<leader>np', VenvManager.select_venv, { desc = 'Python: создать или выбрать venv' })
+map('n', '<leader>pv', VenvManager.select_venv, { desc = 'Python: создать или выбрать venv' })
 map('n', '<leader>tv', VenvManager.select_venv, { desc = "Управление виртуальным окружением" })
 map('n', '<leader>tc', function()
     local command = vim.fn.input("Команда в tmux: ")
