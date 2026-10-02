@@ -322,13 +322,18 @@ require("lazy").setup({
         build = ":TSUpdate",
         config = function()
             require("nvim-treesitter.configs").setup({
+                -- yaml НЕ указываем: единственный репозиторий грамматики
+                -- (ikatyang/tree-sitter-yaml) даёт ABI 14, а nvim 0.12 требует
+                -- 15 и молча отвергает такой .so. Нужен codecompanion только
+                -- для разбора frontmatter в markdown-промптах — на чат это
+                -- не влияет, при разборе промптов плагин просто пропустит
+                -- их. Проверено: без yaml лог плагина чист.
+                --
+                -- markdown и markdown_inline обязательны: плагин разбирает ими
+                -- сообщения и буфер чата (ts_parse_buffer в chat/context.lua).
                 ensure_installed = {
                     "python", "lua", "bash", "javascript", "typescript", "html", "css",
-                    -- Нужны самому codecompanion: yaml — парсит frontmatter промптов,
-                    -- markdown и markdown_inline — разбирают сообщения и буфер чата
-                    -- (ts_parse_buffer в chat/context.lua),
-                    -- json — конфиги и ответы API
-                    "yaml", "markdown", "markdown_inline", "json", "toml",
+                    "markdown", "markdown_inline", "json", "toml",
                 },
                 highlight = { enable = true, additional_vim_regex_highlighting = false },
                 indent = { enable = true },
@@ -1239,16 +1244,26 @@ require("lazy").setup({
             end
             map({ "n" }, "<leader>ob", attach_buffer, { desc = "AI: прицепить текущий файл", silent = true })
 
-            -- Enter в буфере чата отправляет сообщение, в том числе в insert.
+            -- Два патча для буфера чата.
             --
-            -- По умолчанию плагин вешает <CR> только на normal (config.lua:659),
-            -- а в insert только <C-s>. Из-за этого сценарий «написал в insert →
-            -- Escape → Enter» на втором запросе отправлял ПУСТОЕ сообщение:
-            -- текст оставался на предыдущей строке, курсор стоял на пустой.
+            -- 1) Enter отправляет сообщение, в том числе в insert. По умолчанию
+            --    плагин вешает <CR> только на normal (config.lua:659), в insert
+            --    лишь <C-s>. Сценарий «написал в insert → Escape → Enter» на
+            --    втором запросе отправлял ПУСТОЕ сообщение: текст оставался на
+            --    предыдущей строке, курсор стоял на пустой.
             --
-            -- Ставим на BufEnter, а не на FileType: буфер создаёт плагин уже
-            -- после установки filetype, и FileType для него не срабатывает.
-            -- Shift+Enter оставлен для переноса строки.
+            -- 2) Разбор сообщений без диапазона. Плагин при submit зовёт
+            --    parser.lua:145 chat.parsers.markdown:parse({start_range-1,-1}),
+            --    и languagetree:1125 в _get_inject тянет подъязыки из
+            --    queries/markdown/injections.scm (html, yaml, toml,
+            --    markdown_inline) — они собраны под разные ABI, и попытка взять
+            --    range у ноды инъекции падает. Воспроизведено: parse() без
+            --    диапазона работает всегда, parse({N,-1}) падает, и только
+            --    когда в буфере есть блок кода — то есть со ВТОРОГО сообщения.
+            --
+            -- Патчим в двух местах: BufEnter (маппинги — буфер уже создан) и
+            -- отложенный хук после создания парсера (он появляется позже
+            -- BufEnter, проверено: __cc_patched был nil).
             local function setup_chat_buf(ev)
                 if vim.b[ev.buf].cc_chat_keys then return end
                 vim.b[ev.buf].cc_chat_keys = true
@@ -1261,14 +1276,40 @@ require("lazy").setup({
                 end, { buffer = ev.buf, desc = "AI: отправить сообщение", silent = true })
                 vim.keymap.set("i", "S-<CR>", "<CR>", { buffer = ev.buf, desc = "AI: перенос строки" })
             end
+
+            -- Парсер создаётся плагином позже BufEnter, поэтому патчим его
+            -- отложенно и по событию входа в буфер чата.
+            local function patch_chat_parser(ev)
+                local chat = require("codecompanion").last_chat()
+                    or require("codecompanion").buf_get_chat(ev.buf)
+                local lt = chat and chat.parsers and chat.parsers.markdown
+                if not lt or lt.__cc_patched then return end
+                lt.__cc_patched = true
+                local orig_parse = lt.parse
+                lt.parse = function(self)
+                    return orig_parse(self)
+                end
+            end
+
             vim.api.nvim_create_autocmd("FileType", {
                 pattern = "codecompanion",
-                callback = setup_chat_buf,
+                callback = function(ev)
+                    setup_chat_buf(ev)
+                    -- Парсер codecompanion создаётся ПОСЛЕ FileType, поэтому
+                    -- патчим его по событию открытия чата (ChatAdd) и отложенно.
+                    pcall(patch_chat_parser, ev)
+                    vim.schedule(function() pcall(patch_chat_parser, ev) end)
+                end,
             })
             vim.api.nvim_create_autocmd("BufEnter", {
                 pattern = "*",
                 callback = function(ev)
-                    if vim.bo[ev.buf].filetype == "codecompanion" then setup_chat_buf(ev) end
+                    if vim.bo[ev.buf].filetype == "codecompanion" then
+                        setup_chat_buf(ev)
+                        pcall(patch_chat_parser, ev)
+                        -- парсер может создаться позже этой строки
+                        vim.schedule(function() pcall(patch_chat_parser, ev) end)
+                    end
                 end,
             })
             map({ "n" }, "<leader>oo", "<cmd>CodeCompanionChat ask<CR>", { desc = "AI: спросить о коде", silent = true })
