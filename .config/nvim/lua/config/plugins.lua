@@ -1238,9 +1238,41 @@ require("lazy").setup({
                     vim.log.levels.INFO)
             end
             map({ "n" }, "<leader>ob", attach_buffer, { desc = "AI: прицепить текущий файл", silent = true })
+
+            -- Enter в буфере чата отправляет сообщение, в том числе в insert.
+            --
+            -- По умолчанию плагин вешает <CR> только на normal (config.lua:659),
+            -- а в insert только <C-s>. Из-за этого сценарий «написал в insert →
+            -- Escape → Enter» на втором запросе отправлял ПУСТОЕ сообщение:
+            -- текст оставался на предыдущей строке, курсор стоял на пустой.
+            --
+            -- Ставим на BufEnter, а не на FileType: буфер создаёт плагин уже
+            -- после установки filetype, и FileType для него не срабатывает.
+            -- Shift+Enter оставлен для переноса строки.
+            local function setup_chat_buf(ev)
+                if vim.b[ev.buf].cc_chat_keys then return end
+                vim.b[ev.buf].cc_chat_keys = true
+                vim.keymap.set("i", "<CR>", function()
+                    local chat = require("codecompanion").last_chat()
+                        or require("codecompanion").buf_get_chat(ev.buf)
+                    if chat then
+                        require("codecompanion.interactions.chat.keymaps").send.callback(chat)
+                    end
+                end, { buffer = ev.buf, desc = "AI: отправить сообщение", silent = true })
+                vim.keymap.set("i", "S-<CR>", "<CR>", { buffer = ev.buf, desc = "AI: перенос строки" })
+            end
+            vim.api.nvim_create_autocmd("FileType", {
+                pattern = "codecompanion",
+                callback = setup_chat_buf,
+            })
+            vim.api.nvim_create_autocmd("BufEnter", {
+                pattern = "*",
+                callback = function(ev)
+                    if vim.bo[ev.buf].filetype == "codecompanion" then setup_chat_buf(ev) end
+                end,
+            })
             map({ "n" }, "<leader>oo", "<cmd>CodeCompanionChat ask<CR>", { desc = "AI: спросить о коде", silent = true })
             map({ "n" }, "<leader>oa", "<cmd>CodeCompanionChat<CR>", { desc = "AI: открыть чат", silent = true })
-            map({ "n" }, "<leader>oo", "<cmd>CodeCompanionChat ask<CR>", { desc = "AI: спросить о коде", silent = true })
             map({ "n", "v" }, "<leader>oe", "<cmd>CodeCompanionChat explain<CR>", { desc = "AI: объяснить код", silent = true })
             map({ "n", "v" }, "<leader>og", "<cmd>CodeCompanion inline<CR>", { desc = "AI: сгенерировать по описанию", silent = true })
             map({ "n" }, "<leader>oc", "<cmd>CodeCompanion<CR>", { desc = "AI: выбор действия", silent = true })
