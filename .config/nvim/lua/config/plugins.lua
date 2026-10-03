@@ -846,9 +846,23 @@ require("lazy").setup({
                 root_markers = {
                     "pyproject.toml",
                     "setup.py",
+                    "setup.cfg",
                     "requirements.txt",
+                    "Pipfile",
+                    "poetry.lock",
                     "manage.py",
+                    -- Scrapy: scrapy.cfg — единственный маркер проекта,
+                    -- созданный startproject. Без него pyright стартует
+                    -- с root_dir = nil, не видит ни venv, ни
+                    -- pyrightconfig.json, и ругается на неиспользуемые
+                    -- параметры и неразрешённые импорты.
+                    "scrapy.cfg",
                     ".git",
+                    -- venv как последний маркер: у проекта может не быть
+                    -- ни одного из перечисленных выше файлов, но
+                    -- виртуальное окружение почти всегда есть
+                    "venv",
+                    ".venv",
                 },
                 settings = pyright_settings,
 
