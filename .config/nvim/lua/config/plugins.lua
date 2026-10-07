@@ -317,81 +317,79 @@ require("lazy").setup({
     },
 
     -- TREESITTER
+    --
+    -- Ветка main — полностью несовместимый rewrite (README плагина:
+    -- «Treat this as a different plugin you need to set up from scratch»).
+    -- Что изменилось по сравнению с master:
+    --
+    --   * модуль nvim-treesitter.configs УДАЛЁН. Настройки highlight /
+    --     indent / ensure_installed больше не принимает никто — в nvim
+    --     0.12 подсветку и отступы включает сам Neovim, плагин только
+    --     поставляет грамматики и запросы.
+    --   * парсеры ставятся отдельным вызовом install{}, а не ключом
+    --     ensure_installed. Функция асинхронная; install_dir по умолчанию
+    --     stdpath('data')/site.
+    --   * запросы переехали из queries/ в runtime/queries/.
+    --   * плагин больше не поддерживает lazy-загрузку → lazy = false.
+    --   * нужен tree-sitter CLI 0.26.1+ (в ~/.local/bin/tree-sitter).
+    --   * директивы set-lang-from-info-string! и подобные убраны, так
+    --     что баг с match[id] как таблицей узлов больше не возникает —
+    --     обёртка get_node_text, добавленная для master, удалена.
     {
         "nvim-treesitter/nvim-treesitter",
+        branch = "main",
+        lazy = false,
         build = ":TSUpdate",
         config = function()
-            require("nvim-treesitter.configs").setup({
-                -- yaml НЕ указываем: единственный репозиторий грамматики
-                -- (ikatyang/tree-sitter-yaml) даёт ABI 14, а nvim 0.12 требует
-                -- 15 и молча отвергает такой .so. Нужен codecompanion только
-                -- для разбора frontmatter в markdown-промптах — на чат это
-                -- не влияет, при разборе промптов плагин просто пропустит
-                -- их. Проверено: без yaml лог плагина чист.
-                --
-                -- markdown и markdown_inline обязательны: плагин разбирает ими
-                -- сообщения и буфер чата (ts_parse_buffer в chat/context.lua).
-                ensure_installed = {
-                    "python", "lua", "bash", "javascript", "typescript", "html", "css",
-                    "markdown", "markdown_inline", "json", "toml",
-                },
-                highlight = { enable = true, additional_vim_regex_highlighting = false },
-                indent = { enable = true },
+            local ts = require("nvim-treesitter")
+
+            -- setup без аргументов использует значения по умолчанию,
+            -- включая install_dir = stdpath('data')/site. Явно задаём
+            -- install_dir, чтобы путь не «уехал» при смене stdpath.
+            ts.setup({
+                install_dir = vim.fn.stdpath("data") .. "/site",
             })
 
-            -- =============================================
-            -- ОБХОД БАГА nvim-treesitter НА NVIM 0.12
-            -- =============================================
+            -- Парсеры. Установка асинхронная, поэтому для запуска при
+            -- старте (и для :checkhealth) ждём завершения.
             --
-            -- Симптом: при открытии hover-окна (и вообще на любом
-            -- markdown с блоком ```код) печатается ошибка treesitter:
-            --   Decoration provider "conceal_line" ...
-            --   treesitter.lua:197: attempt to call method 'range'
-            --   query_predicates.lua:141: in function 'handler'
+            -- yaml раньше был исключён: ikatyang/tree-sitter-yaml давал
+            -- ABI 14, а nvim 0.12 требует 15. На main парсеры ставятся
+            -- из репозитория nvim-treesitter, а не ikatyang, поэтому
+            -- ограничение снято — yaml вернули. Проверено после установки:
+            -- все 12 парсеров грузятся через vim.treesitter.language.add,
+            -- и :checkhealth nvim-treesitter показывает по ним галочки
+            -- в колонках H (highlights), L (locals), F (folds),
+            -- I (indents) и J (injections).
             --
-            -- Причина (проверено пробой, а не догадкой): начиная с nvim
-            -- 0.12 в директивы передаётся captures как
-            --   capture_id -> TSNode[]   (ТАБЛИЦА узлов)
-            -- а nvim-treesitter ждёт сам узел и делает
-            --   local node = match[capture_id]
-            --   vim.treesitter.get_node_text(node, bufnr)
-            -- Таблица не имеет метода range — get_range() падает.
-            -- Затронуты три директивы плагина:
-            --   set-lang-from-info-string!  (markdown, строка 141)
-            --   set-lang-from-mimetype!     (html,    строка 120)
-            --   downcase!                   (строка  162)
+            -- markdown и markdown_inline обязательны: ими разбираются
+            -- сообщения и буфер чата (ts_parse_buffer в chat/context.lua).
+            ts.install({
+                "python", "lua", "bash", "javascript", "typescript",
+                "html", "css", "markdown", "markdown_inline",
+                "json", "toml", "yaml",
+            }):wait(300000)
+
+            -- Подсветка и отступы. На master включались ключами
+            -- highlight.enable и indent.enable, теперь их надо включать
+            -- самому: подсветку — через vim.treesitter.start(),
+            -- отступы — через indentexpr из плагина.
             --
-            -- Почему ошибка выглядела случайной: директива стоит в
-            -- queries/markdown/injections.scm и срабатывает на каждом
-            -- fence-блоке. В обычных .md их почти нет, а pyright в
-            -- hover всегда присылает ```python — то есть 100% срабатывание.
-            --
-            -- Почему не чиним в плагине: ветка master у nvim-treesitter
-            -- заморожена (README: остаётся «for backward compatibility with
-            -- Nvim 0.11»), фикс есть только в ветке main, а это полностью
-            -- несовместимый rewrite: модуль nvim-treesitter.configs удалён,
-            -- все парсеры пересобираются, нужен tree-sitter CLI 0.26+.
-            --
-            -- Что делаем: подменяем публичную get_node_text на обёртку,
-            -- которая разворачивает match[id] -> match[id][1]. Одна
-            -- функция покрывает все три директивы сразу, и не надо
-            -- копировать их внутренности (filetype.match, алиасы языков),
-            -- которые сломаются при любом обновлении плагина.
-            --
-            -- УДАЛИТЬ весь этот блок, когда nvim-treesitter обновится
-            -- до ветки main — он там больше не нужен.
-            if not vim.g.ru_ts_wrap_installed then
-                local orig_get_node_text = vim.treesitter.get_node_text
-                vim.treesitter.get_node_text = function(node, source, opts)
-                    -- nvim 0.12: capture приходит массивом узлов,
-                    -- плагин ждёт узел. Разворачиваем в один узел.
-                    if type(node) == "table" and node[1] ~= nil then
-                        node = node[1]
-                    end
-                    return orig_get_node_text(node, source, opts)
-                end
-                vim.g.ru_ts_wrap_installed = true
-            end
+            -- Без indentexpr отступы после обновления стали бы обычными
+            -- (cindent/autoindent), то есть регрессией относительно
+            -- того, что было на master. Формально отступы помечены в
+            -- README как experimental, но на master они работали, и
+            -- возвращать к старому поведению незачем.
+            vim.api.nvim_create_autocmd("FileType", {
+                group = vim.api.nvim_create_augroup("RuTreesitter", {
+                    clear = true,
+                }),
+                callback = function(ev)
+                    vim.treesitter.start(ev.buf)
+                    vim.bo[ev.buf].indentexpr =
+                        "v:lua.require'nvim-treesitter'.indentexpr()"
+                end,
+            })
         end,
     },
 
