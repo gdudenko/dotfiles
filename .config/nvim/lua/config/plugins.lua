@@ -385,7 +385,24 @@ require("lazy").setup({
                     clear = true,
                 }),
                 callback = function(ev)
-                    vim.treesitter.start(ev.buf)
+                    -- Не у всех filetypes есть грамматика: NvimTree,
+                    -- help, prompt, NvimNotify и т.п. Внутри
+                    -- vim.treesitter.start() стоит assert(get_parser()),
+                    -- который на отсутствии парсера роняет всё событие
+                    -- (ошибка «Parser could not be created»). Поэтому
+                    -- сначала спрашиваем у language.add(), есть ли
+                    -- парсер, и только потом стартуем подсветку.
+                    --
+                    -- indentexpr ставится под тем же условием: он зовёт
+                    -- nvim-treesitter.indent.get_indent, который без
+                    -- разобранного дерева тоже падает.
+                    local ft = vim.bo[ev.buf].filetype
+                    local lang = ft ~= ""
+                        and vim.treesitter.language.get_lang(ft)
+                    if not lang or not vim.treesitter.language.add(lang) then
+                        return
+                    end
+                    vim.treesitter.start(ev.buf, lang)
                     vim.bo[ev.buf].indentexpr =
                         "v:lua.require'nvim-treesitter'.indentexpr()"
                 end,
