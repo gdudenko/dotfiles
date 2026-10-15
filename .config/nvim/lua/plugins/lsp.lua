@@ -322,6 +322,12 @@ return {
                 -- pyrightconfig.json, и ругается на неиспользуемые
                 -- параметры и неразрешённые импорты.
                 "scrapy.cfg",
+                -- pyrightconfig.json — конфиг самого сервера. Без
+                -- него в списке корень проекта ищется только по
+                -- venv/.git/pyproject.toml: переименуешь venv или
+                -- откроешь проект без него — root_dir станет nil,
+                -- и сервер потеряет и venv, и настройки.
+                "pyrightconfig.json",
                 ".git",
                 -- venv как последний маркер: у проекта может не быть
                 -- ни одного из перечисленных выше файлов, но
@@ -357,9 +363,14 @@ return {
                 local root_dir = client.root_dir or client.config.root_dir
                 py.apply_pyright_venv(client.config.settings, root_dir)
 
+                -- client:notify, а не client.notify: второй вызов —
+                -- обращение к методу как к полю, и Neovim 0.12
+                -- предупреждает об устаревании (проверено через
+                -- :checkhealth vim.deprecated, там же совет
+                -- «use client:notify instead», удаление в 0.13).
                 vim.schedule(function()
                     pcall(function()
-                        client.notify("workspace/didChangeConfiguration", {
+                        client:notify("workspace/didChangeConfiguration", {
                             settings = client.config.settings,
                         })
                     end)
@@ -428,6 +439,77 @@ return {
             "bashls",
             "ts_ls",
             "html",
+        })
+
+        -- =============================================
+        -- :LspRestart — перезапуск языкового сервера
+        -- =============================================
+        --
+        -- Команду с таким именем знают nvim-lspconfig и Neovim
+        -- 0.11+, но здесь она не появляется: конфиг собран на
+        -- нативном vim.lsp.config/vim.lsp.enable, а nvim-lspconfig
+        -- подключён только ради mason, и его plugin/lspconfig.lua
+        -- не выполняется. Проверено в чистом headless-запуске с этим
+        -- конфигом: exists(":LspRestart") и exists(":LspInfo")
+        -- возвращают 0. Поэтому команда своя.
+        --
+        -- Нужна как ручной аварийный перезапуск. Обычно
+        -- пересозданные каталоги и файлы сервер видит сам —
+        -- проверено: после переезда main.py и schemas.py в app/
+        -- pyright подхватил новую структуру за несколько секунд и
+        -- сам перестал ругаться на импорты. Но если состояние
+        -- сервера всё же разошлось с диском (долгий сеанс,
+        -- переименование пакета, сбой индекса), эта команда
+        -- пересобирает его с нуля за полсекунды.
+        -- С аргументом перезапускает только указанные серверы:
+        -- :LspRestart pyright
+        vim.api.nvim_create_user_command("LspRestart", function(args)
+            local names = nil
+            if args.args and args.args ~= "" then
+                names = vim.split(args.args, ",", { trimempty = true })
+            end
+
+            -- Фильтруем сами: vim.lsp.get_clients() принимает в name
+            -- одну строку, список имён молча не срабатывает — с ним
+            -- команда ругалась бы «серверов нет».
+            local clients = vim.lsp.get_clients()
+            if names then
+                clients = vim.tbl_filter(function(client)
+                    return vim.tbl_contains(names, client.name)
+                end, clients)
+            end
+
+            if #clients == 0 then
+                vim.notify("LspRestart: подходящих серверов нет", vim.log.levels.WARN)
+                return
+            end
+
+            local stopped = {}
+            for _, client in ipairs(clients) do
+                table.insert(stopped, client.name)
+                -- force=true — не ждать мягкого завершения,
+                -- иначе переоткрытие буфера может обогнать сервер.
+                client:stop(true)
+            end
+
+            -- Новый сервер поднимается по событию FileType, а оно
+            -- на текущем буфере уже произошло. Переоткрываем файл,
+            -- чтобы авто-attach сработал заново.
+            vim.schedule(function()
+                if vim.api.nvim_get_current_buf() > 0 and vim.bo.filetype ~= "" then
+                    vim.cmd("silent! edit")
+                end
+            end)
+
+            vim.notify("LspRestart: перезапущен " .. table.concat(stopped, ", "), vim.log.levels.INFO)
+        end, {
+            desc = "Перезапустить языковой сервер (LspRestart [сервер,...])",
+            nargs = "?",
+            complete = function()
+                return vim.tbl_map(function(client)
+                    return client.name
+                end, vim.lsp.get_clients())
+            end,
         })
     end,
 },

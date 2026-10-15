@@ -476,12 +476,21 @@ nvim --headless "+Lazy! sync" +qa
 
 **LSP не стартует**
 
-`:Mason` показывает состояние серверов, `:LspInfo` и `:checkhealth vim.lsp`
-дают детали. Pyright ищет корень по маркерам: `pyproject.toml`, `setup.py`,
+`:Mason` показывает состояние серверов, `:checkhealth vim.lsp` даёт детали.
+Команды `:LspInfo` в этом конфиге нет: её регистрирует плагин
+nvim-lspconfig, а конфиг собран на нативном `vim.lsp.config`, и
+nvim-lspconfig подключён только ради mason. Вместо неё — своя
+`:LspRestart`: `:LspRestart` перезапускает все серверы, `:LspRestart
+pyright` — только pyright. Нужна, когда состояние сервера разошлось с
+диском: переименовали пакет, добавили файл в уже открытом проекте.
+
+Pyright ищет корень по маркерам: `pyproject.toml`, `setup.py`,
 `setup.cfg`, `requirements.txt`, `Pipfile`, `poetry.lock`, `manage.py`,
-`scrapy.cfg`, `.git`, `venv`, `.venv`. `scrapy.cfg` добавлен специально для
-Scrapy: без него `startproject` создаёт проект, у которого нет других маркеров,
-и pyright стартует с `root_dir = nil`.
+`scrapy.cfg`, `pyrightconfig.json`, `.git`, `venv`, `.venv`. `scrapy.cfg`
+добавлен специально для Scrapy: без него `startproject` создаёт проект, у
+которого нет других маркеров, и pyright стартует с `root_dir = nil`.
+`pyrightconfig.json` добавлен по той же причине: иначе корень ищется
+только по venv или .git, и проект без них теряет и корень, и настройки.
 
 **tmux не подхватывает конфиг**
 
